@@ -17,6 +17,9 @@ on:
     paths-ignore:
       - "**.md"
       - "docs/**"
+      # These have their own workflow (install-check.yml).
+      - "scripts/install-check.ps1"
+      - ".github/workflows/install-check.yml"
   workflow_dispatch:
 
 permissions:

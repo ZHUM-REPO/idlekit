@@ -1,0 +1,48 @@
+# Takes the published setup file, installs it on a clean Windows machine,
+# starts the installed app, and uninstalls it again (scripts/install-check.ps1).
+#
+# Runs on request (Actions > Check the installer > Run workflow) and whenever
+# the check itself changes. The release workflow runs the same check on every
+# new build before publishing it.
+name: Check the installer
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release to check, like v0.2.0. Empty means the latest one.
+        required: false
+        default: ""
+  push:
+    branches: [main]
+    paths:
+      - scripts/install-check.ps1
+      - .github/workflows/install-check.yml
+
+permissions:
+  contents: read
+
+jobs:
+  install:
+    name: Install, start, uninstall
+    runs-on: windows-latest
+    timeout-minutes: 20
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ inputs.tag }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Download the setup file
+        shell: pwsh
+        run: |
+          $pick = @()
+          if ($env:TAG) { $pick = @($env:TAG) }
+          gh release download @pick --repo $env:GITHUB_REPOSITORY --pattern "*-setup.exe" --dir installer
+          Get-ChildItem installer | ForEach-Object { "{0}  {1} bytes" -f $_.Name, $_.Length }
+
+      - name: Install, start, uninstall
+        shell: pwsh
+        run: |
+          $setup = Get-ChildItem installer -Filter *-setup.exe | Select-Object -First 1
+          ./scripts/install-check.ps1 -Installer $setup.FullName
