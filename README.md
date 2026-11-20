@@ -14,7 +14,7 @@ Screenshots use the browser preview's sample data. The pictures in them are gene
 
 ## Installing
 
-Download the latest `IdleKit_…_x64-setup.exe` from the [releases page](../../releases/latest) and run it. It needs 64-bit Windows 10 or 11.
+Download the latest `IdleKit_…_x64-setup.exe` from the [releases page](https://github.com/ZHUM-REPO/idlekit/releases/latest) and run it. It needs 64-bit Windows 10 or 11.
 
 - The installer isn't code-signed, so Windows may say the publisher is unknown. Choose **More info**, then **Run anyway**.
 - It installs for the current user and doesn't ask for administrator rights.
