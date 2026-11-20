@@ -53,18 +53,59 @@ const libName = isWindows
     ? "libsteam_api.dylib"
     : "libsteam_api.so";
 
-// steamworks-sys copies the redistributable into its build OUT_DIR.
-const buildDir = path.join(targetDir, "build");
-let lib = null;
-for (const d of fs.existsSync(buildDir) ? fs.readdirSync(buildDir) : []) {
-  if (!d.startsWith("steamworks-sys-")) continue;
-  const candidate = path.join(buildDir, d, "out", libName);
-  if (fs.existsSync(candidate)) {
-    lib = candidate;
-    break;
-  }
+// Folder of the Steamworks SDK's redistributable_bin that holds the library
+// for this target, the same choice the steamworks-sys build script makes.
+function redistFolder() {
+  if (isWindows) return triple.startsWith("i686") ? "" : "win64";
+  if (triple.includes("apple")) return "osx";
+  if (triple.startsWith("i686")) return "linux32";
+  if (triple.startsWith("aarch64")) return "linuxarm64";
+  return "linux64";
 }
-if (!lib) throw new Error(`${libName} not found under ${buildDir}`);
+
+// The SDK that steamworks-sys was built against: STEAM_SDK_LOCATION when it
+// is set, otherwise the copy inside the crate, found through cargo metadata.
+function sdkLibrary() {
+  let sdk = process.env.STEAM_SDK_LOCATION;
+  if (!sdk) {
+    const meta = JSON.parse(
+      execFileSync("cargo", ["metadata", "--format-version", "1"], {
+        cwd: tauriDir,
+        encoding: "utf8",
+        maxBuffer: 256 * 1024 * 1024,
+        stdio: ["ignore", "pipe", "inherit"],
+      }),
+    );
+    const pkg = meta.packages.find((p) => p.name === "steamworks-sys");
+    if (!pkg) return null;
+    sdk = path.join(path.dirname(pkg.manifest_path), "lib", "steam");
+  }
+  const candidate = path.join(sdk, "redistributable_bin", redistFolder(), libName);
+  return fs.existsSync(candidate) ? candidate : null;
+}
+
+// Fallback: the copy steamworks-sys leaves in its build output folder. Cargo
+// has used both build/steamworks-sys-<hash>/out and
+// build/steamworks-sys/<hash>/out, so look a few levels down.
+function builtLibrary(dir, depth = 0, inCrate = false) {
+  if (depth > 4 || !fs.existsSync(dir)) return null;
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      const mine = inCrate || entry.name.startsWith("steamworks-sys");
+      if (depth === 0 && !mine) continue;
+      const found = builtLibrary(full, depth + 1, mine);
+      if (found) return found;
+    } else if (inCrate && entry.name === libName) {
+      return full;
+    }
+  }
+  return null;
+}
+
+const buildDir = path.join(targetDir, "build");
+const lib = sdkLibrary() ?? builtLibrary(buildDir);
+if (!lib) throw new Error(`${libName} not found in the steamworks-sys crate or under ${buildDir}`);
 
 const resDir = path.join(tauriDir, "resources");
 fs.mkdirSync(resDir, { recursive: true });
