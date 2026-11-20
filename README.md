@@ -86,6 +86,8 @@ npm run test:scripts   # the release scripts
 npm run typecheck
 ```
 
+The installer has a check of its own, `scripts/install-check.ps1`. On Windows it installs a setup file without asking anything, looks at what was installed, starts the app and waits for its window, opens it a second time, and uninstalls it again. It installs and removes IdleKit for the current user, so it is meant for a machine where that doesn't matter. **Actions → Check the installer → Run workflow** runs it on GitHub against a published release.
+
 ## Releasing a new version
 
 `.github/workflows/release.yml` builds the Windows installer on every change to `main`, and publishes it as a release when the version hasn't been released yet. To release:
@@ -94,7 +96,7 @@ npm run typecheck
 2. Add a `## <version>` section to `CHANGELOG.md`. It becomes the text of the release page.
 3. Commit to `main`. Both edits can be made on github.com with the pencil button.
 
-About fifteen minutes later the release has the installer, its signature and `latest.json`, which installed copies read to learn that a newer version exists.
+About fifteen minutes later the release has the installer, its signature and `latest.json`, which installed copies read to learn that a newer version exists. Before publishing, the workflow runs the install check on the new setup file; one that fails is not published.
 
 **The signing key.** The workflow signs the installer with the repository secret `TAURI_SIGNING_PRIVATE_KEY`; the matching public key is `plugins.updater.pubkey` in `src-tauri/tauri.conf.json`. Without a working key the installer is still built and released, but that build can't update itself. If the key is ever lost, make a new pair with `npx tauri signer generate`, put the public half in `tauri.conf.json` and the private half in the secret. Copies installed before the change won't accept updates signed with the new key and have to be reinstalled once by hand.
 
@@ -122,9 +124,11 @@ src-tauri/helper/        steam-helper: per-game Steamworks process (JSON lines o
 src-tauri/windows/       hooks.nsh: stops running helpers before the installer copies files
 scripts/                 prepare-helper.mjs (helper build); release-info, build-release and
                          release-files (used by the release workflow; logic in lib/release.mjs);
+                         install-check.ps1 (installs, starts and uninstalls a setup file);
                          fake-steam.mjs, a stand-in for Steam's store API and image hosts for
                          working on game art offline (usage in the file)
-.github/workflows/       release.yml: builds and publishes the Windows installer
+.github/workflows/       release.yml: builds, checks and publishes the Windows installer;
+                         install-check.yml: runs the install check on a published release
 ```
 
 ## Status
@@ -136,8 +140,9 @@ What has been tested, and how:
 - **Tray and startup, on Linux:** the close question, hiding to the tray and coming back from a second launch, the tray menu (driven over D-Bus), the sign-in startup entry being written and removed, starting in the tray, and opening the window after an update.
 - **Updater, on Linux against a local update server:** finding a newer version at startup and from the tray menu, accepting a file signed with the release key, and refusing one that was altered after signing.
 - **Game art**, against `scripts/fake-steam.mjs`: the lookup, the disk cache, covers in hashed folders, and each fallback.
+- **The Windows installer, on GitHub's Windows machine:** the app and the helper compile, and the installer is built and signed. The published `IdleKit_0.2.0_x64-setup.exe` installs without asking anything; puts the app, the helper and Steam's library in place; creates Start menu and desktop shortcuts; the installed app opens its window with WebView2 running; opening it a second time hands over to the copy already running; and uninstalling removes all of it.
 
-What has not been tested: anything against live Steam servers or a running Steam client, and the Windows-only parts (Steam's registry keys, the Credential Manager, tray clicks, the installer handing over during an update). The first things to try on Windows, in this order:
+What has not been tested: anything against live Steam servers or a running Steam client, and these Windows-only parts: Steam's registry keys, the Credential Manager, the tray icon and its menu, starting at sign-in, and an installed copy updating itself to a newer release (there has only been one release). The first things to try on Windows, in this order:
 
 1. **Local mode:** add your account from "This PC's Steam". The library should fill with covers within a second or two, and lists should show each game's icon; if they don't, look on the Logs page for a warning from `art`. Then idle a game and check Steam shows you in-game.
 2. **Achievements:** open a game in the Manager; the list should load in a few seconds.

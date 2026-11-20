@@ -1,5 +1,6 @@
-# Builds the Windows installer on every change to main, and publishes it as a
-# release when the version in src-tauri/Cargo.toml has not been released yet.
+# Builds the Windows installer on every change to main, checks that it installs
+# and that the installed app starts, and publishes it as a release when the
+# version in src-tauri/Cargo.toml has not been released yet.
 #
 # To release a new version: raise `version` in src-tauri/Cargo.toml (and add a
 # section for it to CHANGELOG.md), then commit to main. Installed copies find
@@ -72,27 +73,15 @@ jobs:
         shell: bash
         run: ls -l src-tauri/target/release/bundle/nsis/
 
-      # Starts the freshly built app on the build machine and looks whether it
-      # stays up and opens its window. A warning here does not stop the release,
-      # because the build machine is not a normal desktop.
-      - name: Start-up check
-        continue-on-error: true
+      # Installs the fresh setup file on the build machine, starts the installed
+      # app and uninstalls it again. A setup file that fails is not published.
+      - name: Install check
         shell: pwsh
+        env:
+          VERSION: ${{ steps.info.outputs.version }}
         run: |
-          $app = Start-Process -FilePath "src-tauri/target/release/idlekit.exe" -PassThru
-          Start-Sleep -Seconds 25
-          $app.Refresh()
-          if ($app.HasExited) {
-            Write-Output "::warning::IdleKit stopped within 25 seconds of starting (exit code $($app.ExitCode))"
-            exit 1
-          }
-          Write-Output "IdleKit is still running after 25 seconds. Window title: '$($app.MainWindowTitle)'"
-          Write-Output "Data folder:"
-          Get-ChildItem "$env:APPDATA\dev.idlekit.app" -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name
-          Write-Output "Window engine folder:"
-          Get-ChildItem "$env:LOCALAPPDATA\dev.idlekit.app" -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name
-          Stop-Process -Id $app.Id -Force
-          Get-Process steam-helper -ErrorAction SilentlyContinue | Stop-Process -Force
+          $setup = Get-ChildItem src-tauri/target/release/bundle/nsis -Filter *-setup.exe | Select-Object -First 1
+          ./scripts/install-check.ps1 -Installer $setup.FullName -Version $env:VERSION
 
       - name: Publish the release
         if: steps.info.outputs.exists == 'false'
