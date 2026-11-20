@@ -1,0 +1,110 @@
+# Builds the Windows installer on every change to main, and publishes it as a
+# release when the version in src-tauri/Cargo.toml has not been released yet.
+#
+# To release a new version: raise `version` in src-tauri/Cargo.toml (and add a
+# section for it to CHANGELOG.md), then commit to main. Installed copies find
+# the new release and offer to install it.
+#
+# One repository secret, TAURI_SIGNING_PRIVATE_KEY, holds the key that signs the
+# installer so installed copies accept it as an update (Settings > Secrets and
+# variables > Actions). Without a working key the installer is still built and
+# released, but that build cannot update itself.
+name: Build and release
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+# A newer change replaces a build that is still running.
+concurrency:
+  group: release
+  cancel-in-progress: true
+
+jobs:
+  windows:
+    name: Windows installer
+    runs-on: windows-latest
+    timeout-minutes: 75
+    env:
+      CARGO_TERM_COLOR: always
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Tools
+        shell: bash
+        run: |
+          rustup update stable --no-self-update
+          rustup default stable
+          echo "node $(node --version), npm $(npm --version), $(rustc --version), $(gh --version | head -n 1)"
+
+      - name: What is being built
+        id: info
+        shell: bash
+        run: |
+          node scripts/release-info.mjs | tee -a "$GITHUB_OUTPUT"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Check the release scripts
+        run: npm run test:scripts
+
+      - name: Build the Steam helper
+        run: node scripts/prepare-helper.mjs --release
+
+      - name: Build the installer
+        run: node scripts/build-release.mjs
+
+      - name: Installer
+        shell: bash
+        run: ls -l src-tauri/target/release/bundle/nsis/
+
+      # Starts the freshly built app on the build machine and looks whether it
+      # stays up and opens its window. A warning here does not stop the release,
+      # because the build machine is not a normal desktop.
+      - name: Start-up check
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $app = Start-Process -FilePath "src-tauri/target/release/idlekit.exe" -PassThru
+          Start-Sleep -Seconds 25
+          $app.Refresh()
+          if ($app.HasExited) {
+            Write-Output "::warning::IdleKit stopped within 25 seconds of starting (exit code $($app.ExitCode))"
+            exit 1
+          }
+          Write-Output "IdleKit is still running after 25 seconds. Window title: '$($app.MainWindowTitle)'"
+          Write-Output "Data folder:"
+          Get-ChildItem "$env:APPDATA\dev.idlekit.app" -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name
+          Write-Output "Window engine folder:"
+          Get-ChildItem "$env:LOCALAPPDATA\dev.idlekit.app" -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name
+          Stop-Process -Id $app.Id -Force
+          Get-Process steam-helper -ErrorAction SilentlyContinue | Stop-Process -Force
+
+      - name: Publish the release
+        if: steps.info.outputs.exists == 'false'
+        shell: bash
+        run: |
+          node scripts/release-files.mjs
+          gh release create "${{ steps.info.outputs.tag }}" release/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "IdleKit ${{ steps.info.outputs.version }}" \
+            --notes-file release-notes.md
+          echo "Published IdleKit ${{ steps.info.outputs.version }}: https://github.com/$GITHUB_REPOSITORY/releases/tag/${{ steps.info.outputs.tag }}" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Nothing to publish
+        if: steps.info.outputs.exists == 'true'
+        shell: bash
+        run: |
+          echo "IdleKit ${{ steps.info.outputs.version }} is already released, so this run only checked that the code still builds. To release, raise the version in src-tauri/Cargo.toml." >> "$GITHUB_STEP_SUMMARY"

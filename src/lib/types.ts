@@ -1,0 +1,323 @@
+// Mirrors the Rust structs (serde camelCase). Keep in sync with src-tauri.
+
+export type Mode = "local" | "direct";
+
+export interface FarmingSettings {
+  thresholdHours: number;
+  maxGames: number;
+  soloGames: number;
+  checkMinutes: number;
+  restartOnCheck: boolean;
+  skipRefundable: boolean;
+  order: "mostDrops" | "leastDrops" | "name" | "playtime";
+}
+
+export interface UnlockerSettings {
+  minDelayMinutes: number;
+  maxDelayMinutes: number;
+  scheduleEnabled: boolean;
+  scheduleStart: string;
+  scheduleEnd: string;
+  order: "common" | "rare" | "schema";
+  idleWhileUnlocking: boolean;
+  parallelGames: number;
+  importedTimeScale: number;
+}
+
+export interface MarketSettings {
+  strategy: "undercutLowest" | "matchLowest" | "aboveHighestBuy";
+  undercutCents: number;
+  minPriceCents: number;
+  maxPriceCents: number;
+  delayMs: number;
+}
+
+export interface Settings {
+  theme: "graphite" | "midnight" | "daylight";
+  accent: "amber" | "cyan" | "lime" | "rose" | "violet";
+  /** Library cards: portrait cover art, or the wide banner. */
+  cardStyle: "cover" | "banner";
+  language: string;
+  maxIdleGames: number;
+  idleStatusText: string;
+  autoIdleOnLaunch: boolean;
+  farmOnLaunch: boolean;
+  afterFarming: "none" | "autoIdle" | "unlocker";
+  connectDirectOnLaunch: boolean;
+  /** What the window's close button does. "ask" asks the first time. */
+  closeAction: "ask" | "tray" | "quit";
+  /** When started at sign-in, stay in the tray instead of opening the window. */
+  startInTray: boolean;
+  /** Look for a newer version each time IdleKit opens. */
+  checkUpdates: boolean;
+  farming: FarmingSettings;
+  unlocker: UnlockerSettings;
+  market: MarketSettings;
+}
+
+export interface ImportedTiming {
+  apiName: string;
+  offsetSecs: number;
+}
+
+export interface Account {
+  steamId: string;
+  accountName: string;
+  personaName: string;
+  avatarUrl: string;
+  mode: Mode;
+  personaState: number;
+  favorites: number[];
+  manualGames: { appid: number; name: string }[];
+  autoIdle: number[];
+  farmBlacklist: number[];
+  farmWhitelist: number[];
+  unlockQueue: number[];
+  unlockSkip: Record<string, string[]>;
+  unlockOrder: Record<string, string[]>;
+  unlockImported: Record<string, ImportedTiming[]>;
+  boosterTargets: Record<string, number>;
+  addedAt: number;
+  hasToken: boolean;
+  hasCookie: boolean;
+  localActive: boolean;
+}
+
+export interface LocalUser {
+  steamId: string;
+  accountName: string;
+  personaName: string;
+  mostRecent: boolean;
+  active: boolean;
+}
+
+export interface LocalSteam {
+  installPath: string | null;
+  running: boolean;
+  activeSteamId: string | null;
+  users: LocalUser[];
+}
+
+export type CmState = "offline" | "connecting" | "online" | "blocked" | "reconnecting" | "error";
+
+export interface CmStatus {
+  steamId: string;
+  status: CmState;
+  message: string;
+  games: number[];
+  personaState: number;
+}
+
+export interface IdleGame {
+  appid: number;
+  name: string;
+  startedAt: number;
+  sources: string[];
+  targetMinutes: number | null;
+}
+
+export interface IdleSnapshot {
+  steamId: string;
+  games: IdleGame[];
+}
+
+export interface StartResult {
+  appid: number;
+  ok: boolean;
+  error: string | null;
+}
+
+export interface FarmGame {
+  appid: number;
+  name: string;
+  dropsRemaining: number;
+  playtimeHours: number;
+  status: "queued" | "idling" | "done" | "skipped" | "error";
+  note: string;
+}
+
+export interface FarmStatus {
+  steamId: string;
+  running: boolean;
+  phase: "idle" | "scanning" | "phase1" | "phase2" | "restarting" | "done" | "stopped" | "error";
+  message: string;
+  games: FarmGame[];
+  active: number[];
+  totalDrops: number;
+  cardsFarmed: number;
+  startedAt: number;
+  nextCheckAt: number;
+}
+
+export interface UnlockGame {
+  appid: number;
+  name: string;
+  total: number;
+  remaining: number;
+  status: "queued" | "running" | "waiting" | "done" | "error";
+  message: string;
+  nextAt: number;
+  nextName: string;
+}
+
+export interface UnlockStatus {
+  steamId: string;
+  running: boolean;
+  phase: "idle" | "running" | "done" | "stopped" | "error";
+  message: string;
+  games: UnlockGame[];
+  unlocked: number;
+}
+
+export interface LogLine {
+  ts: number;
+  level: "info" | "warn" | "error" | "debug";
+  scope: string;
+  message: string;
+}
+
+export interface GameEntry {
+  appid: number;
+  name: string;
+  playtimeMinutes: number;
+  iconUrl: string;
+  hasStats: boolean;
+  lastPlayed: number;
+  manual: boolean;
+}
+
+/** Image URLs for one game, looked up from Steam's store. `null` where Steam has none. */
+export interface GameArtUrls {
+  icon: string | null;
+  header: string | null;
+  cover: string | null;
+}
+
+export interface AchItem {
+  apiName: string;
+  name: string;
+  description: string;
+  iconUrl: string;
+  iconGrayUrl: string;
+  hidden: boolean;
+  achieved: boolean;
+  unlockTime: number;
+  percent: number | null;
+  protected: boolean;
+}
+
+export interface StatItem {
+  name: string;
+  displayName: string;
+  kind: "int" | "float" | "avgrate";
+  value: number | null;
+  min: number | null;
+  max: number | null;
+  incrementOnly: boolean;
+  protected: boolean;
+}
+
+export interface AchView {
+  appid: number;
+  achievements: AchItem[];
+  stats: StatItem[];
+  schemaFound: boolean;
+  warning: string | null;
+}
+
+export interface InvItem {
+  marketHashName: string;
+  name: string;
+  itemType: string;
+  class: "card" | "foil" | "emoticon" | "background" | "booster" | "gems" | "other";
+  game: string;
+  iconUrl: string;
+  marketable: boolean;
+  count: number;
+  assetIds: string[];
+}
+
+export interface PriceInfo {
+  marketHashName: string;
+  lowestSell: number | null;
+  highestBuy: number | null;
+  sellListings: number;
+  suggested: number | null;
+  youReceive: number | null;
+}
+
+export interface Listing {
+  listingId: string;
+  name: string;
+  game: string;
+  priceText: string;
+  status: "active" | "pending";
+}
+
+export interface SellOutcome {
+  assetId: string;
+  ok: boolean;
+  needsConfirmation: boolean;
+  message: string;
+}
+
+export interface MarketProgress {
+  task: "prices" | "sell" | "remove";
+  done: number;
+  total: number;
+  message: string;
+}
+
+export type AuthStage = "qr" | "scanned" | "code" | "confirm" | "working" | "done" | "error" | "expired";
+
+export interface AuthEvent {
+  sessionId: string;
+  status: AuthStage;
+  challengeUrl: string | null;
+  codeType: "email" | "device" | null;
+  hint: string | null;
+  canConfirm: boolean;
+  message: string | null;
+  steamId: string | null;
+  accountName: string | null;
+}
+
+export interface DesktopInfo {
+  platform: "windows" | "macos" | "linux";
+  /** A tray icon exists, so the window can be closed without quitting. */
+  tray: boolean;
+  /** IdleKit is registered to start at sign-in. */
+  autostart: boolean;
+}
+
+export interface UpdateState {
+  /** False when this copy has nowhere to look for updates. */
+  configured: boolean;
+  current: string;
+  phase: "idle" | "checking" | "downloading" | "installing";
+  available: { version: string; notes: string } | null;
+  /** Unix time in milliseconds of the last finished check. */
+  checkedAt: number | null;
+  error: string | null;
+  downloaded: number;
+  total: number | null;
+  /** Where releases are listed, for "what's new". */
+  releasesUrl: string | null;
+}
+
+export interface Bootstrap {
+  version: string;
+  dataDir: string;
+  settings: Settings;
+  accounts: Account[];
+  activeAccount: string | null;
+  localSteam: LocalSteam;
+  helperFound: boolean;
+  cm: CmStatus[];
+  idle: IdleSnapshot[];
+  farming: FarmStatus[];
+  unlocker: UnlockStatus[];
+  logs: LogLine[];
+  desktop: DesktopInfo;
+  update: UpdateState;
+}

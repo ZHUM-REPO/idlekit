@@ -1,0 +1,53 @@
+[package]
+name = "idlekit"
+version = "0.2.0"
+description = "Steam idler: card farming, achievement manager, playtime booster and market seller"
+edition = "2021"
+default-run = "idlekit"
+
+[lib]
+name = "idlekit_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon"] }
+tauri-plugin-opener = "2"
+tauri-plugin-single-instance = "2"
+tauri-plugin-autostart = "2"
+tauri-plugin-updater = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+reqwest = { version = "0.13", features = ["json", "cookies", "form", "query", "multipart", "gzip"] }
+rustls = "0.23"
+scraper = "0.29"
+steam-vent = "0.5"
+steam-vent-proto-steam = "0.5"
+protobuf = "=3.5.1"
+rsa = "0.9"
+rand = "0.8"
+base64 = "0.22"
+chrono = { version = "0.4", features = ["serde"] }
+regex = "1"
+futures-util = "0.3"
+tokio-util = "0.7"
+anyhow = "1"
+tracing = "0.1"
+urlencoding = "2"
+dirs = "6"
+
+[target.'cfg(windows)'.dependencies]
+winreg = "0.56"
+keyring = { version = "3", features = ["windows-native"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+keyring = { version = "3", features = ["apple-native"] }
+
+[workspace]
+members = ["helper"]
+
+[profile.release]
+strip = true

@@ -1,0 +1,13 @@
+{
+  "bundle": {
+    "resources": {
+      "resources/steam_api64.dll": "steam_api64.dll"
+    },
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser",
+        "installerHooks": "./windows/hooks.nsh"
+      }
+    }
+  }
+}

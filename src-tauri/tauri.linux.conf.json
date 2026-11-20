@@ -1,0 +1,7 @@
+{
+  "bundle": {
+    "resources": {
+      "resources/libsteam_api.so": "libsteam_api.so"
+    }
+  }
+}
