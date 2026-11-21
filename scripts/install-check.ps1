@@ -197,9 +197,12 @@ Write-Output "Desktop shortcut: $(if (Test-Path -LiteralPath $desktopShortcut) {
 
 # IdleKit keeps a log file from 0.2.2 on.
 $logFile = Join-Path $env:APPDATA "$identifier\log.txt"
-$loadedLine = "The window loaded"
 $logged = $false
 try { $logged = [version]$entry.DisplayVersion -ge [version]"0.2.2" } catch { $logged = $false }
+# From 0.5 the line is written once the first page is on screen; 0.2.2 wrote
+# one as soon as the window's script started.
+$loadedLine = "The window is ready"
+try { if ([version]$entry.DisplayVersion -lt [version]"0.5.0") { $loadedLine = "The window loaded" } } catch { }
 function Read-Log {
     # The app has the file open for writing, so read it without locking it.
     try {
@@ -264,6 +267,8 @@ if ($app.HasExited) {
     if ($logged) {
         $deadline = (Get-Date).AddSeconds(60)
         while ((Get-Date) -lt $deadline -and -not (Read-Log).Contains($loadedLine)) { Start-Sleep -Seconds 2 }
+        # A page that breaks right after showing gets a moment to say so.
+        Start-Sleep -Seconds 4
     }
 
     Stop-Process -Id $app.Id -Force -ErrorAction SilentlyContinue
@@ -293,9 +298,16 @@ if ($logged) {
             Problem "log.txt has no line saying which version started on which system"
         }
         if ($log.Contains($loadedLine)) {
-            Passed "the window's contents loaded and what happens in the window reaches log.txt"
+            Passed "the first page came up in the window, and what happens in the window reaches log.txt"
         } else {
-            Problem "The window opened but its contents had not loaded after a minute (nothing from the window in log.txt)"
+            Problem "The window opened but its first page was not showing after a minute (log.txt has no '$loadedLine' line)"
+        }
+        # Faults in the window ("ui") or in the app itself ("crash").
+        $faults = @($log -split "`n" | Where-Object { $_ -match "^\S+ \S+\s+error\s+(ui|crash)\s" })
+        if ($faults.Count -gt 0) {
+            Problem "log.txt reports $($faults.Count) fault(s) in the window or the app: $($faults[0].Trim())"
+        } else {
+            Passed "log.txt reports no fault in the window or the app"
         }
         $private = @($env:USERNAME, $env:COMPUTERNAME) | Where-Object { $_ -and $_.Length -ge 3 }
         $found = @($private | Where-Object { $log.IndexOf($_, [StringComparison]::OrdinalIgnoreCase) -ge 0 })
