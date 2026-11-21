@@ -2,6 +2,16 @@
 
 The section for the version being released becomes the text of its release page.
 
+## 0.5
+
+Releases are now numbered 0.5, 0.6 and so on, one step per release; after 0.9 comes 1.0. This one follows 0.2.2.
+
+- **The log keeps more out.** Shortened IPv6 addresses, a Steam ID written right next to other text, and your Windows user name in any folder path (not only under `C:\Users`) are now replaced too.
+- **The log garbles less.** The line for signing in by name and password is whole again. A folder path no longer swallows the rest of its sentence, version numbers are no longer taken for network addresses, long names made of words (achievement IDs, market items, Steam's web addresses) are no longer hidden as if they were keys, and a sign-in name that happens to be an everyday word such as "steam" is no longer blanked out everywhere.
+- When `log.txt` starts over at 2 MB, the new file begins by saying again which version is running on which system. If the full file can't be set aside, it is emptied instead of growing without end.
+- A line written at the very moment the log file is opened can no longer miss the file.
+- "The window is ready" is now written once the first page is on screen, and a start that fails is logged. The check each setup file goes through before it is published waits for that line and fails if the log reports a fault in the window or the app.
+
 ## 0.2.2
 
 - **A log file.** IdleKit now writes what it did and what went wrong to `log.txt`, so there is something to look at after a problem even when the app was closed or crashed. The Logs page has a **Show log.txt** button that opens its folder (`%APPDATA%\dev.idlekit.app`). The file starts over at 2 MB, keeping the previous one as `log.old.txt`.

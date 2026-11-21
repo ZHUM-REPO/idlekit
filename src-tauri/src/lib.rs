@@ -69,7 +69,7 @@ async fn wait_until_usable(app: &App, account: &Account, wait: Duration, poll: D
 async fn startup(app: App, handle: AppHandle) {
     let cfg = app.config();
     let s = cfg.settings.clone();
-    logbus::info("app", format!("IdleKit {} started", env!("CARGO_PKG_VERSION")));
+    logbus::info("app", format!("IdleKit {} started", updates::shown(env!("CARGO_PKG_VERSION"))));
     if s.check_updates {
         // On its own, so waiting for Steam below doesn't hold it up, and not
         // the first thing the app does: Steam connections come first.
@@ -160,11 +160,16 @@ pub fn run() {
             let state = App::new(data_dir.clone());
             // Names first, so nothing written to the file can carry one.
             state.hide_names();
+            let home = app.path().home_dir().ok();
+            let folder = home.as_ref().and_then(|h| h.file_name()).map(|n| n.to_string_lossy().into_owned());
+            for name in [folder, std::env::var("USERNAME").ok(), std::env::var("USER").ok()].into_iter().flatten() {
+                logbus::hide_user(&name);
+            }
             logbus::open_file(
                 &data_dir,
                 &format!(
                     "IdleKit {} started on {} {}, web view {}, launched at sign-in: {}",
-                    env!("CARGO_PKG_VERSION"),
+                    updates::shown(env!("CARGO_PKG_VERSION")),
                     std::env::consts::OS,
                     std::env::consts::ARCH,
                     tauri::webview_version().unwrap_or_else(|_| "unknown".into()),

@@ -6,6 +6,8 @@ import "./styles.css";
 
 // Faults in the window that nothing else caught still end up in the log.
 window.addEventListener("error", (e) => {
+  // The browser's own notice about layout timing, not a fault in the app.
+  if (e.message.startsWith("ResizeObserver loop")) return;
   logLine("error", "ui", `Uncaught error: ${e.message} (${e.filename.split("/").pop() ?? ""}:${e.lineno})`);
 });
 window.addEventListener("unhandledrejection", (e) => {
@@ -19,5 +21,6 @@ createRoot(document.getElementById("root")!).render(
   </StrictMode>,
 );
 
-// Says the window's contents came up: a window that stays blank never writes this.
-logLine("info", "ui", "The window loaded");
+// The window's script is running. "The window is ready" follows from App once
+// the first page is on screen; a window that stays blank stops between the two.
+logLine("debug", "ui", "The window's script started");

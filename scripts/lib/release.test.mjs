@@ -7,10 +7,14 @@ import { fileURLToPath } from "node:url";
 import {
   buildOverride,
   changelogSection,
+  checkNumbering,
   findInstaller,
+  nextVersion,
   readVersion,
   releaseNotes,
+  shownVersion,
   signatureMatchesKey,
+  tagFor,
   updateEndpoint,
   updateManifest,
 } from "./release.mjs";
@@ -22,6 +26,23 @@ test("reads the version from the [package] section only", () => {
   assert.equal(readVersion(toml), "1.4.2");
   assert.throws(() => readVersion('[dependencies]\nfoo = "1"\n'), /no `version/);
   assert.throws(() => readVersion('[package]\nversion = "next"\n'), /not a version/);
+});
+
+test("releases are named with two numbers and numbered one after another", () => {
+  assert.equal(shownVersion("0.5.0"), "0.5");
+  assert.equal(shownVersion("1.0.0"), "1.0");
+  assert.equal(shownVersion("0.2.2"), "0.2.2");
+  assert.equal(tagFor("0.5.0"), "v0.5");
+  assert.equal(nextVersion("0.5.0"), "0.6.0");
+  assert.equal(nextVersion("0.9.0"), "1.0.0");
+  assert.equal(nextVersion("1.9.0"), "2.0.0");
+  checkNumbering("0.5.0");
+  checkNumbering("0.9.0");
+  checkNumbering("1.0.0");
+  assert.throws(() => checkNumbering("0.5.1"), /last number stays 0.*next one is 0\.6\.0/);
+  assert.throws(() => checkNumbering("0.10.0"), /after 0\.9\.0 comes 1\.0\.0/);
+  // the version this repository is at follows the rule
+  checkNumbering(readVersion(fs.readFileSync(path.join(root, "src-tauri/Cargo.toml"), "utf8")));
 });
 
 test("the version is set in Cargo.toml and nowhere else", () => {
@@ -54,6 +75,9 @@ test("takes one version's section from the changelog", () => {
   assert.equal(changelogSection(log, "0.2.0"), "- Older");
   assert.equal(changelogSection(log, "0.2"), "");
   assert.equal(changelogSection(log, "9.9.9"), "");
+  // a heading may name the release the short way
+  assert.equal(changelogSection("## 0.5\n\n- Short name\n\n## 0.2.2\n\n- Before\n", "0.5.0"), "- Short name");
+  assert.equal(changelogSection("## 0.5\n\n- Short name\n", "0.5.1"), "");
   assert.equal(changelogSection("## v1.0.0 (2026-11-20)\r\n\r\n- Dated heading\r\n", "1.0.0"), "- Dated heading");
 });
 
@@ -77,8 +101,8 @@ test("writes a manifest the updater can read", () => {
   assert.equal(manifest.pub_date, "2026-11-20T12:00:00.000Z");
   const entry = manifest.platforms["windows-x86_64"];
   assert.equal(entry.signature, "c2lnbmF0dXJl");
-  assert.equal(entry.url, "https://github.com/someone/idlekit/releases/download/v0.3.0/IdleKit_0.3.0_x64-setup.exe");
   assert.deepEqual(manifest.platforms["windows-x86_64-nsis"], entry);
+  assert.equal(entry.url, "https://github.com/someone/idlekit/releases/download/v0.3/IdleKit_0.3.0_x64-setup.exe");
   assert.throws(() => updateManifest({ version: "0.3.0", repo: "a/b", installer: "x.exe", signature: " " }), /no signature/);
 });
 
@@ -87,7 +111,7 @@ test("release notes name the file to download", () => {
   assert.match(text, /^- New thing/);
   assert.match(text, /\*\*IdleKit_0\.3\.0_x64-setup\.exe\*\*/);
   assert.match(text, /offers this version itself/);
-  assert.match(releaseNotes({ version: "0.3.0", installer: "a.exe", changes: "" }), /^IdleKit 0\.3\.0/);
+  assert.match(releaseNotes({ version: "0.3.0", installer: "a.exe", changes: "" }), /^IdleKit 0\.3\n/);
   assert.match(releaseNotes({ version: "0.3.0", installer: "a.exe", selfUpdating: false }), /cannot update itself/);
 });
 

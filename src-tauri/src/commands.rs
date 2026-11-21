@@ -87,7 +87,7 @@ pub async fn get_bootstrap(app: State<'_, App>, handle: AppHandle) -> CmdResult<
     let local = app.local_steam();
     let cfg = app.config();
     Ok(Bootstrap {
-        version: env!("CARGO_PKG_VERSION").to_string(),
+        version: crate::updates::shown(env!("CARGO_PKG_VERSION")),
         data_dir: app.data_dir.to_string_lossy().into_owned(),
         accounts: account_views(&app, &local),
         settings: cfg.settings,

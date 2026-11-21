@@ -146,6 +146,7 @@ export const useApp = create<State>((set, get) => ({
         achAppid: initialAch,
       });
     } catch (e) {
+      logLine("error", "ui", `IdleKit couldn't start: ${errorText(e)}`);
       set({ fatal: errorText(e) });
       return;
     }

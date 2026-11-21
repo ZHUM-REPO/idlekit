@@ -3,7 +3,7 @@ import { CloseDialog, UpdateBar } from "./components/Desktop";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { Sidebar, Toasts, TopBar } from "./components/Shell";
 import { Button } from "./components/ui";
-import { inTauri } from "./lib/api";
+import { inTauri, logLine } from "./lib/api";
 import { useApp } from "./lib/store";
 import { AccountsPage } from "./pages/Accounts";
 import { AchievementsPage } from "./pages/Achievements";
@@ -13,6 +13,22 @@ import { LibraryPage } from "./pages/Library";
 import { LogsPage } from "./pages/Logs";
 import { MarketPage } from "./pages/Market";
 import { SettingsPage } from "./pages/Settings";
+
+let shown = false;
+
+/**
+ * Writes one line to the log when the first page is on screen. It sits beside
+ * the page inside the same error boundary, so a page that fails to draw never
+ * gets this line.
+ */
+function Shown({ page }: { page: string }) {
+  useEffect(() => {
+    if (shown) return;
+    shown = true;
+    logLine("info", "ui", `The window is ready: showing the ${page} page`);
+  }, [page]);
+  return null;
+}
 
 export function App() {
   const ready = useApp((s) => s.ready);
@@ -69,6 +85,7 @@ export function App() {
             {page === "accounts" && <AccountsPage />}
             {page === "settings" && <SettingsPage />}
             {page === "logs" && <LogsPage />}
+            <Shown page={page} />
           </ErrorBoundary>
         </main>
       </div>

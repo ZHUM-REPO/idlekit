@@ -91,12 +91,12 @@ jobs:
           gh release create "${{ steps.info.outputs.tag }}" release/* \
             --repo "$GITHUB_REPOSITORY" \
             --target "$GITHUB_SHA" \
-            --title "IdleKit ${{ steps.info.outputs.version }}" \
+            --title "IdleKit ${{ steps.info.outputs.name }}" \
             --notes-file release-notes.md
-          echo "Published IdleKit ${{ steps.info.outputs.version }}: https://github.com/$GITHUB_REPOSITORY/releases/tag/${{ steps.info.outputs.tag }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "Published IdleKit ${{ steps.info.outputs.name }}: https://github.com/$GITHUB_REPOSITORY/releases/tag/${{ steps.info.outputs.tag }}" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Nothing to publish
         if: steps.info.outputs.exists == 'true'
         shell: bash
         run: |
-          echo "IdleKit ${{ steps.info.outputs.version }} is already released, so this run only checked that the code still builds. To release, raise the version in src-tauri/Cargo.toml." >> "$GITHUB_STEP_SUMMARY"
+          echo "IdleKit ${{ steps.info.outputs.name }} is already released, so this run only checked that the code still builds. To release, raise the version in src-tauri/Cargo.toml." >> "$GITHUB_STEP_SUMMARY"

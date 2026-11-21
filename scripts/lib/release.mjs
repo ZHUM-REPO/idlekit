@@ -41,7 +41,34 @@ export function readVersion(cargoToml) {
   return match[1];
 }
 
-export const tagFor = (version) => `v${version}`;
+/**
+ * How a version is written for people: "0.5" for 0.5.0. Installers and the
+ * updater need three numbers; releases are named with the first two.
+ */
+export const shownVersion = (version) => version.replace(/^(\d+\.\d+)\.0$/, "$1");
+
+/**
+ * The numbering: every release raises the second number by one, and after
+ * x.9 comes the next whole number: 0.5, 0.6, … 0.9, 1.0, 1.1. The third
+ * number stays 0.
+ */
+export function checkNumbering(version) {
+  const parts = /^(\d+)\.(\d+)\.(\d+)$/.exec(version);
+  if (!parts) throw new Error(`"${version}" is not a version like 0.5.0`);
+  const [major, minor, patch] = parts.slice(1).map(Number);
+  if (patch !== 0) {
+    throw new Error(`"${version}": the last number stays 0. Releases are numbered 0.5.0, 0.6.0 and so on; the next one is ${nextVersion(`${major}.${minor}.0`)}`);
+  }
+  if (minor > 9) throw new Error(`"${version}": after ${major}.9.0 comes ${major + 1}.0.0`);
+}
+
+/** The version that follows this one: 0.5.0 → 0.6.0, 0.9.0 → 1.0.0. */
+export function nextVersion(version) {
+  const [major, minor] = version.split(".").map(Number);
+  return minor >= 9 ? `${major + 1}.0.0` : `${major}.${minor + 1}.0`;
+}
+
+export const tagFor = (version) => `v${shownVersion(version)}`;
 
 /** Where installed copies look for updates: a file attached to the repository's latest release. */
 export function updateEndpoint(repo) {
@@ -59,12 +86,17 @@ export function buildOverride({ repo, signed }) {
   };
 }
 
-/** The text under `## <version>` in CHANGELOG.md, or "" when there is none. */
+/**
+ * The text under `## <version>` in CHANGELOG.md, or "" when there is none.
+ * The heading may give the version as it is shown ("## 0.5") or in full.
+ */
 export function changelogSection(changelog, version) {
   const lines = changelog.split(/\r?\n/);
   // The version has to be the whole thing: "0.2" must not match "## 0.2.0".
-  const heading = new RegExp(`^##\\s+v?${version.replace(/\./g, "\\.")}(?![\\w.-])`);
-  const start = lines.findIndex((l) => heading.test(l));
+  const headings = [...new Set([shownVersion(version), version])].map(
+    (name) => new RegExp(`^##\\s+v?${name.replace(/\./g, "\\.")}(?![\\w.-])`),
+  );
+  const start = headings.map((heading) => lines.findIndex((l) => heading.test(l))).find((at) => at >= 0) ?? -1;
   if (start < 0) return "";
   const rest = lines.slice(start + 1);
   const end = rest.findIndex((l) => /^##\s/.test(l));
@@ -92,7 +124,7 @@ export function updateManifest({ version, repo, installer, signature, notes, dat
   };
   return {
     version,
-    notes: notes || `IdleKit ${version}`,
+    notes: notes || `IdleKit ${shownVersion(version)}`,
     pub_date: (date ?? new Date()).toISOString(),
     platforms: { "windows-x86_64": entry, "windows-x86_64-nsis": entry },
   };
@@ -101,7 +133,7 @@ export function updateManifest({ version, repo, installer, signature, notes, dat
 /** The text of the release page. */
 export function releaseNotes({ version, installer, changes, selfUpdating = true }) {
   return [
-    changes || `IdleKit ${version}`,
+    changes || `IdleKit ${shownVersion(version)}`,
     "",
     "## Installing",
     "",

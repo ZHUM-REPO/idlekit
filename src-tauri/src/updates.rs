@@ -89,7 +89,7 @@ pub fn snapshot(app: &App, handle: &AppHandle) -> UpdateState {
     let endpoints = endpoints(handle);
     let mut state = app.updates.state.lock().unwrap().clone();
     state.configured = !endpoints.is_empty();
-    state.current = handle.package_info().version.to_string();
+    state.current = shown(&handle.package_info().version.to_string());
     state.releases_url = endpoints.first().and_then(releases_page);
     state
 }
@@ -139,9 +139,9 @@ pub async fn check(app: &App, handle: &AppHandle) -> UpdateState {
         state.checked_at = Some(chrono::Utc::now().timestamp_millis());
         match found {
             Ok(Some(update)) => {
-                logbus::info("update", format!("IdleKit {} is available", update.version));
+                logbus::info("update", format!("IdleKit {} is available", shown(&update.version)));
                 state.available = Some(Available {
-                    version: update.version.clone(),
+                    version: shown(&update.version),
                     notes: update.body.clone().unwrap_or_default(),
                 });
                 *app.updates.found.lock().unwrap() = Some(update);
@@ -229,7 +229,7 @@ async fn download_and_hand_over(
 
     app.updates.state.lock().unwrap().phase = Phase::Installing;
     publish(app, handle);
-    logbus::info("update", format!("Installing IdleKit {}", update.version));
+    logbus::info("update", format!("Installing IdleKit {}", shown(&update.version)));
 
     // The installer replaces the helper and Steam's library, so nothing may be using them.
     app.farming.stop_everything();
@@ -247,9 +247,26 @@ async fn download_and_hand_over(
     handle.restart()
 }
 
+/// How a version is written for people: "0.5" for 0.5.0. Installers and the
+/// updater need three numbers; releases are named with the first two.
+pub fn shown(version: &str) -> String {
+    match version.strip_suffix(".0") {
+        Some(short) if short.contains('.') => short.to_string(),
+        _ => version.to_string(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn versions_are_shown_with_two_numbers() {
+        assert_eq!(shown("0.5.0"), "0.5");
+        assert_eq!(shown("1.0.0"), "1.0");
+        assert_eq!(shown("0.2.2"), "0.2.2");
+        assert_eq!(shown("10.0"), "10.0");
+    }
 
     #[test]
     fn finds_the_releases_page_of_a_github_update_address() {

@@ -93,8 +93,10 @@ The installer has a check of its own, `scripts/install-check.ps1`. On Windows it
 `.github/workflows/release.yml` builds the Windows installer on every change to `main`, and publishes it as a release when the version hasn't been released yet. To release:
 
 1. Raise `version` under `[package]` in `src-tauri/Cargo.toml`. That is the only place the app's version is set.
-2. Add a `## <version>` section to `CHANGELOG.md`. It becomes the text of the release page.
+2. Add a `## <version>` section to `CHANGELOG.md`, named the short way (`## 0.6`). It becomes the text of the release page.
 3. Commit to `main`. Both edits can be made on github.com with the pencil button.
+
+**Numbering.** Every release raises the second number by one, and after 0.9 comes 1.0: 0.5, 0.6, … 0.9, 1.0, 1.1. Installers and the updater need three numbers, so `Cargo.toml` says `0.6.0` and the third stays 0; the release, its tag (`v0.6`) and the app itself show `0.6`. The workflow refuses any other numbering, such as `0.5.1` or `0.10.0`.
 
 About fifteen minutes later the release has the installer, its signature and `latest.json`, which installed copies read to learn that a newer version exists. Before publishing, the workflow runs the install check on the new setup file; one that fails is not published.
 
@@ -137,14 +139,14 @@ scripts/                 prepare-helper.mjs (helper build); release-info, build-
 
 What has been tested, and how:
 
-- **Logic:** 46 backend unit tests (badge/licence/profile/inventory/listing parsers, binary KeyValues and achievement schemas, fee math for dollar and other wallets, pricing, farming phases, unlocker ordering, delays and time windows, the game-art lookup with its batching and cache, what the close button does, when to start in the tray, when a playtime boost ends, what the log scrubs and how its file starts over, which settings changed) and 9 tests of the release scripts. The UI type-checks, and every UI call matches a registered command.
+- **Logic:** 48 backend unit tests (badge/licence/profile/inventory/listing parsers, binary KeyValues and achievement schemas, fee math for dollar and other wallets, pricing, farming phases, unlocker ordering, delays and time windows, the game-art lookup with its batching and cache, what the close button does, when to start in the tray, when a playtime boost ends, what the log scrubs and how its file starts over, which settings changed) and 10 tests of the release scripts. The UI type-checks, and every UI call matches a registered command.
 - **The app on Linux**, against a mock Steam install: adding a local account, loading its games, launching `steam-helper` for a game.
 - **Start on launch, on Linux** against a stand-in Steam client that only appears twelve seconds after IdleKit: auto-idle waits, then starts within seconds of Steam being there; with no Steam installed it says so at once.
 - **Tray and startup, on Linux:** the close question, hiding to the tray and coming back from a second launch, the tray menu (driven over D-Bus), the sign-in startup entry being written and removed, starting in the tray, and opening the window after an update.
 - **Updater, on Linux against a local update server:** finding a newer version at startup and from the tray menu, accepting a file signed with the release key, and refusing one that was altered after signing.
-- **The log, on Linux** with the window loaded against a stand-in Steam client, two runs in a row: `log.txt` gets a header per run, the wait for Steam, auto-idle starting and the window's actions, and holds neither the sign-in name, the Steam ID, the profile name nor the user name from folder paths.
+- **The log, on Linux** with the window loaded against a stand-in Steam client, two runs in a row: `log.txt` gets a header per run, the wait for Steam, auto-idle starting, the first page coming up and the window's actions, and holds neither the sign-in name, the Steam ID, the profile name nor the user name from folder paths.
 - **Game art**, against `scripts/fake-steam.mjs`: the lookup, the disk cache, covers in hashed folders, and each fallback.
-- **The Windows installer, on GitHub's Windows machine:** the app and the helper compile, and the installer is built and signed. Each setup file is checked before it is published: it installs without asking anything; puts the app, the helper and Steam's library in place; creates Start menu and desktop shortcuts; the installed app opens its window with WebView2 running; opening it a second time hands over to the copy already running; from 0.2.2, the window's contents load and `log.txt` is written without the machine's user or computer name in it; and uninstalling removes all of it.
+- **The Windows installer, on GitHub's Windows machine:** the app and the helper compile, and the installer is built and signed. Each setup file is checked before it is published: it installs without asking anything; puts the app, the helper and Steam's library in place; creates Start menu and desktop shortcuts; the installed app opens its window with WebView2 running; opening it a second time hands over to the copy already running; the first page comes up in the window; `log.txt` is written without the machine's user or computer name in it and reports no fault in the window or the app; and uninstalling removes all of it.
 
 What has not been tested: anything against live Steam servers or a running Steam client, and these Windows-only parts: Steam's registry keys, the Credential Manager, the tray icon and its menu, starting at sign-in, the check that Steam's process is still there, the market's fee numbers against a real wallet in another currency, and an installed copy updating itself to a newer release. The first things to try on Windows, in this order:
 
@@ -158,17 +160,17 @@ If anything fails, `log.txt` has what's needed to debug it: see the next section
 
 ## The log
 
-IdleKit writes what it did and what went wrong to `log.txt` in `%APPDATA%\dev.idlekit.app` (on the Logs page, **Show log.txt** opens the folder). The Logs page shows the same lines for the current run; the file also keeps earlier runs, and survives a crash. At 2 MB it starts over and the previous file is kept as `log.old.txt`.
+IdleKit writes what it did and what went wrong to `log.txt` in `%APPDATA%\dev.idlekit.app` (on the Logs page, **Show log.txt** opens the folder). The Logs page shows the same lines for the current run; the file also keeps earlier runs, and survives a crash. At 2 MB it starts over, saying again which version is running, and the previous file is kept as `log.old.txt`.
 
 What is written:
 
-- a header for each run: IdleKit's version, the system, the web view's version, and whether it was started at sign-in;
+- a header for each run: IdleKit's version, the system, the web view's version, and whether it was started at sign-in, then `The window is ready` once the first page is on screen;
 - every action taken in the window, with how long it took or the error it ended with (`Start idling: 2 game(s) (440, 570): done in 31 ms`);
 - changed settings, one line per setting (`farming.checkMinutes: 10 → 15`); text you typed yourself is only noted as changed;
 - what the close button and the tray menu did, and what idling, card farming, the unlocker, the market and the updater did in the background;
 - faults nothing else caught, in the window or in the app itself, with where they happened.
 
-What is replaced before a line is stored, shown or written: sign-in names; Steam IDs, of which only the last four digits stay (`account …1234`); passwords, Steam Guard codes, cookies, tokens and QR sign-in links; e-mail and network addresses; custom profile addresses; your user name in folder paths; and any other long unreadable string. Profile names are not part of any log line. The log does name the games, achievements and market items an action was about, so read it through before posting it somewhere public. Nothing is sent anywhere: the file stays on your PC until you share it.
+What is replaced before a line is stored, shown or written: sign-in names; Steam IDs, of which only the last four digits stay (`account …1234`); passwords, Steam Guard codes, cookies, tokens and QR sign-in links; e-mail and network addresses; custom profile addresses; your user name in folder paths, wherever your profile folder is; and any other long string that doesn't read as words. Profile names are not part of any log line. The log does name the games, achievements and market items an action was about, so read it through before posting it somewhere public. Nothing is sent anywhere: the file stays on your PC until you share it.
 
 ## Use responsibly
 

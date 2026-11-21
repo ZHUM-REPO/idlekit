@@ -1,7 +1,8 @@
 // Tells the release workflow what it is about to build, as key=value lines
 // (the workflow appends them to $GITHUB_OUTPUT):
 //
-//   version   the app version, from src-tauri/Cargo.toml
+//   version   the app version, from src-tauri/Cargo.toml (three numbers: 0.5.0)
+//   name      the version as releases are named (two numbers: 0.5)
 //   tag       the release tag for it
 //   exists    true when that release is already published
 //   signed    true when the update-signing key is available
@@ -9,10 +10,16 @@ import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { readVersion, tagFor } from "./lib/release.mjs";
+import { checkNumbering, readVersion, shownVersion, tagFor } from "./lib/release.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const version = readVersion(fs.readFileSync(path.join(root, "src-tauri", "Cargo.toml"), "utf8"));
+try {
+  checkNumbering(version);
+} catch (e) {
+  console.error(`::error::${e.message}`);
+  process.exit(1);
+}
 const tag = tagFor(version);
 
 // `gh release view` exits with an error when there is no such release.
@@ -24,6 +31,7 @@ const exists = view.status === 0;
 const signed = !!process.env.TAURI_SIGNING_PRIVATE_KEY?.trim();
 
 console.log(`version=${version}`);
+console.log(`name=${shownVersion(version)}`);
 console.log(`tag=${tag}`);
 console.log(`exists=${exists}`);
 console.log(`signed=${signed}`);
