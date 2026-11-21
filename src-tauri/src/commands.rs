@@ -282,7 +282,10 @@ pub async fn set_web_cookie(app: State<'_, App>, steam_id: String, cookie: Strin
         return Err(format!("This cookie belongs to {} — not this account", ws.steam_id));
     }
     ws.verify().await.map_err(anyhow_err)?;
-    secrets::set(&secrets::cookie_key(&steam_id), &cookie).map_err(anyhow_err)?;
+    // Keep the cookie's own value, not everything that was pasted: a whole
+    // cookie line can be longer than the Windows credential store accepts.
+    let (_, value, _) = community::parse_login_secure(&cookie).map_err(anyhow_err)?;
+    secrets::set(&secrets::cookie_key(&steam_id), &value).map_err(anyhow_err)?;
     app.forget_web_session(&steam_id).await;
     logbus::info("accounts", format!("Web session cookie saved for {steam_id}"));
     app.emit_accounts();
@@ -298,6 +301,10 @@ pub async fn remove_account(app: State<'_, App>, steam_id: String) -> CmdResult<
     app.cm.forget(&steam_id);
     secrets::delete(&secrets::refresh_token_key(&steam_id));
     secrets::delete(&secrets::cookie_key(&steam_id));
+    // The Steam Guard "remember this device" token is kept under the sign-in name.
+    if let Some(name) = app.account(&steam_id).ok().map(|a| a.account_name).filter(|n| !n.is_empty()) {
+        secrets::delete(&secrets::guard_key(&name));
+    }
     app.forget_web_session(&steam_id).await;
     let _ = std::fs::remove_file(app.data_dir.join(format!("games_{steam_id}.json")));
     app.update_config(|c| {
@@ -572,7 +579,7 @@ pub async fn ach_open(app: State<'_, App>, steam_id: String, appid: u32) -> CmdR
             .as_ref()
             .map(|s| s.achievements.iter().map(|a| (a.api_name.clone(), a)).collect())
             .unwrap_or_default();
-        let achievements = data
+        let achievements: Vec<AchItem> = data
             .get("achievements")
             .and_then(Value::as_array)
             .cloned()
@@ -628,8 +635,11 @@ pub async fn ach_open(app: State<'_, App>, steam_id: String, appid: u32) -> CmdR
                 }
             }
         }
+        let still_loading = achievements.is_empty() && schema.as_ref().is_some_and(|s| !s.achievements.is_empty());
         let warning = if schema.is_none() {
             Some("Steam's local stats file for this game wasn't found, so protected flags and stats can't be shown.".to_string())
+        } else if still_loading {
+            Some("Steam hasn't loaded this game's achievements yet. Close the game here and open it again in a moment.".to_string())
         } else {
             None
         };
@@ -831,7 +841,21 @@ pub async fn market_cancel(app: State<'_, App>) -> CmdResult<()> {
 pub struct PriceReport {
     /// Steam wallet currency id (1 = USD, 3 = EUR, 31 = SAR, …)
     pub currency: u32,
+    /// The wallet's fee numbers, so the page computes "you receive" the same way.
+    pub wallet: market::Wallet,
     pub items: Vec<PriceInfo>,
+}
+
+/// The account's wallet as Steam's market page describes it. When it can't be
+/// read, prices and fees fall back to a US-dollar wallet's, and the log says so.
+async fn market_wallet(ws: &WebSession) -> market::Wallet {
+    match market::wallet(ws).await {
+        Ok(wallet) => wallet,
+        Err(e) => {
+            logbus::warn("market", format!("{e:#}. Using US-dollar fees: check \"you receive\" against Steam before listing"));
+            market::Wallet::default()
+        }
+    }
 }
 
 #[tauri::command]
@@ -839,7 +863,8 @@ pub async fn market_prices(app: State<'_, App>, steam_id: String, hash_names: Ve
     app.market_cancel.store(false, Ordering::SeqCst);
     let ws = app.web_session(&steam_id).await.map_err(anyhow_err)?;
     let s = app.settings().market;
-    let currency = market::wallet_currency(&ws).await.unwrap_or(1);
+    let wallet = market_wallet(&ws).await;
+    let currency = wallet.currency;
     let total = hash_names.len();
     let mut out = Vec::new();
     for (i, hash) in hash_names.into_iter().enumerate() {
@@ -869,6 +894,7 @@ pub async fn market_prices(app: State<'_, App>, steam_id: String, hash_names: Ve
                     info.highest_buy = highest;
                     info.sell_listings = count;
                     info.suggested = market::suggest_price(
+                        &wallet,
                         lowest,
                         highest,
                         &s.strategy,
@@ -876,7 +902,7 @@ pub async fn market_prices(app: State<'_, App>, steam_id: String, hash_names: Ve
                         s.min_price_cents,
                         s.max_price_cents,
                     );
-                    info.you_receive = info.suggested.map(market::seller_receives);
+                    info.you_receive = info.suggested.map(|price| wallet.seller_receives(price));
                 }
                 Err(e) => logbus::warn("market", format!("{hash}: {e:#}")),
             },
@@ -886,7 +912,7 @@ pub async fn market_prices(app: State<'_, App>, steam_id: String, hash_names: Ve
         tokio::time::sleep(Duration::from_millis(s.delay_ms)).await;
     }
     progress("prices", total, total, "Done");
-    Ok(PriceReport { currency, items: out })
+    Ok(PriceReport { currency, wallet, items: out })
 }
 
 #[derive(Deserialize)]
@@ -903,12 +929,13 @@ pub async fn market_sell(app: State<'_, App>, steam_id: String, items: Vec<SellR
     app.market_cancel.store(false, Ordering::SeqCst);
     let ws = app.web_session(&steam_id).await.map_err(anyhow_err)?;
     let delay = app.settings().market.delay_ms.max(500);
+    let wallet = market_wallet(&ws).await;
     let total: usize = items.iter().map(|i| i.asset_ids.len()).sum();
     let mut done = 0;
     let mut out = Vec::new();
     let mut pending_confirmations = 0;
     'outer: for item in items {
-        let seller = market::seller_receives(item.buyer_cents);
+        let seller = wallet.seller_receives(item.buyer_cents);
         if seller == 0 {
             logbus::warn("market", format!("{}: price too low to list", item.market_hash_name));
             continue;

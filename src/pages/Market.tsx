@@ -2,9 +2,9 @@ import { RefreshCw, Search, Tag, Trash } from "lucide-react";
 import { useMemo, useState } from "react";
 import { Button, Callout, Empty, Modal, PageHeader, Pill, Select, Tabs, TextInput, cx, inputClass } from "../components/ui";
 import { api } from "../lib/api";
-import { money } from "../lib/format";
+import { US_DOLLAR_WALLET, money, sellerReceives } from "../lib/format";
 import { useActiveAccount, useApp } from "../lib/store";
-import type { Account, InvItem, Listing, PriceInfo } from "../lib/types";
+import type { Account, InvItem, Listing, PriceInfo, Wallet } from "../lib/types";
 
 type ClassFilter = "all" | InvItem["class"];
 
@@ -87,7 +87,8 @@ function Inventory({ account }: { account: Account }) {
   const [items, setItems] = useState<InvItem[] | null>(null);
   const [loading, setLoading] = useState(false);
   const [prices, setPrices] = useState<Record<string, PriceInfo>>({});
-  const [currency, setCurrency] = useState(1);
+  const [wallet, setWallet] = useState<Wallet>(US_DOLLAR_WALLET);
+  const currency = wallet.currency;
   const [qty, setQty] = useState<Record<string, number>>({});
   const [price, setPrice] = useState<Record<string, string>>({});
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -129,7 +130,7 @@ function Inventory({ account }: { account: Account }) {
 
   const sellable = shown.filter((i) => selected.has(i.marketHashName) && qtyOf(i) > 0 && priceOf(i));
   const totalBuyer = sellable.reduce((n, i) => n + (priceOf(i) ?? 0) * qtyOf(i), 0);
-  const totalYou = sellable.reduce((n, i) => n + receive(priceOf(i) ?? 0) * qtyOf(i), 0);
+  const totalYou = sellable.reduce((n, i) => n + sellerReceives(priceOf(i) ?? 0, wallet) * qtyOf(i), 0);
 
   const toggle = (h: string) =>
     setSelected((s) => {
@@ -201,7 +202,7 @@ function Inventory({ account }: { account: Account }) {
               setBusy("price");
               const r = await run(null, () => api.prices(account.steamId, [...selected]));
               if (r) {
-                setCurrency(r.currency);
+                setWallet(r.wallet);
                 setPrices((p) => ({ ...p, ...Object.fromEntries(r.items.map((x) => [x.marketHashName, x])) }));
               }
               setBusy(null);
@@ -287,7 +288,7 @@ function Inventory({ account }: { account: Account }) {
                         className={cx(inputClass, "num h-7.5 w-20 text-right")}
                       />
                     </td>
-                    <td className="num px-4 py-2 text-right">{each ? money(receive(each), currency) : "—"}</td>
+                    <td className="num px-4 py-2 text-right">{each ? money(sellerReceives(each, wallet), currency) : "—"}</td>
                   </tr>
                 );
               })}
@@ -364,15 +365,6 @@ function Inventory({ account }: { account: Account }) {
       )}
     </div>
   );
-}
-
-/** Mirror of the Rust fee math: largest amount you receive for a buyer price. */
-function receive(buyer: number): number {
-  if (buyer < 3) return 0;
-  const pays = (s: number) => s + Math.max(1, Math.floor(s * 0.05)) + Math.max(1, Math.floor(s * 0.1));
-  let s = Math.floor(buyer / 1.15) + 2;
-  while (s > 0 && pays(s) > buyer) s--;
-  return s;
 }
 
 function Listings({ account }: { account: Account }) {

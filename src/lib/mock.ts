@@ -19,6 +19,7 @@ import type {
   UnlockStatus,
   UpdateState,
 } from "./types";
+import { US_DOLLAR_WALLET } from "./format";
 
 type Cb = (payload: unknown) => void;
 
@@ -210,13 +211,13 @@ export function createMock() {
 
   const idle: Record<string, IdleGame[]> = {
     [ME]: [
-      { appid: 730, name: "Counter-Strike 2", startedAt: now - 72 * 60_000 - 14_000, sources: ["manual"], targetMinutes: null },
-      { appid: 440, name: "Team Fortress 2", startedAt: now - 3 * 3600_000 - 9 * 60_000, sources: ["auto"], targetMinutes: null },
-      { appid: 620, name: "Portal 2", startedAt: now - 41 * 60_000, sources: ["booster"], targetMinutes: 120 },
-      { appid: 632470, name: "Disco Elysium", startedAt: now - 4 * 60_000 - 31_000, sources: ["farming"], targetMinutes: null },
+      { appid: 730, name: "Counter-Strike 2", startedAt: now - 72 * 60_000 - 14_000, sources: ["manual"], targetMinutes: null, boostStartedAt: null },
+      { appid: 440, name: "Team Fortress 2", startedAt: now - 3 * 3600_000 - 9 * 60_000, sources: ["auto"], targetMinutes: null, boostStartedAt: null },
+      { appid: 620, name: "Portal 2", startedAt: now - 41 * 60_000, sources: ["booster"], targetMinutes: 120, boostStartedAt: now - 41 * 60_000 },
+      { appid: 632470, name: "Disco Elysium", startedAt: now - 4 * 60_000 - 31_000, sources: ["farming"], targetMinutes: null, boostStartedAt: null },
     ],
     [ALT]: [
-      { appid: 570, name: "Dota 2", startedAt: now - 9 * 3600_000, sources: ["manual"], targetMinutes: null },
+      { appid: 570, name: "Dota 2", startedAt: now - 9 * 3600_000, sources: ["manual"], targetMinutes: null, boostStartedAt: null },
     ],
   };
 
@@ -497,7 +498,7 @@ export function createMock() {
       const cur = (idle[steamId] ??= []);
       for (const g of list) {
         if (!cur.some((x) => x.appid === g.appid))
-          cur.push({ appid: g.appid, name: g.name, startedAt: Date.now(), sources: ["manual"], targetMinutes: null });
+          cur.push({ appid: g.appid, name: g.name, startedAt: Date.now(), sources: ["manual"], targetMinutes: null, boostStartedAt: null });
       }
       pushIdle(steamId);
       return list.map((g: { appid: number }) => ({ appid: g.appid, ok: true, error: null }));
@@ -519,7 +520,7 @@ export function createMock() {
     },
     booster_start: ({ steamId, appid, name, minutes }) => {
       const cur = (idle[steamId] ??= []);
-      cur.push({ appid, name, startedAt: Date.now(), sources: ["booster"], targetMinutes: minutes });
+      cur.push({ appid, name, startedAt: Date.now(), sources: ["booster"], targetMinutes: minutes, boostStartedAt: Date.now() });
       pushIdle(steamId);
       return [{ appid, ok: true, error: null }];
     },
@@ -588,7 +589,7 @@ export function createMock() {
         });
       }
       emit("market://progress", { task: "prices", done: hashNames.length, total: hashNames.length, message: "Done" });
-      return { currency: 1, items: out };
+      return { currency: 1, wallet: US_DOLLAR_WALLET, items: out };
     },
     market_sell: async ({ items }) => {
       const out = [];

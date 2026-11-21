@@ -16,6 +16,9 @@ struct Entry {
     started_at: i64,
     sources: BTreeSet<String>,
     target_minutes: Option<u32>,
+    /// When the playtime booster was set on this game, which can be long
+    /// after the game began idling for another reason.
+    boost_started_at: Option<i64>,
 }
 
 #[derive(Serialize, Clone, Debug)]
@@ -26,6 +29,8 @@ pub struct IdleGame {
     pub started_at: i64,
     pub sources: Vec<String>,
     pub target_minutes: Option<u32>,
+    /// What `target_minutes` is counted from.
+    pub boost_started_at: Option<i64>,
 }
 
 #[derive(Serialize, Clone, Debug)]
@@ -52,6 +57,12 @@ fn now_ms() -> i64 {
     chrono::Utc::now().timestamp_millis()
 }
 
+/// Whether a playtime boost has run its course. The minutes count from when
+/// the boost was set, not from when the game began idling.
+fn boost_reached(now: i64, started_at: i64, boost_started_at: Option<i64>, target_minutes: u32) -> bool {
+    (now - boost_started_at.unwrap_or(started_at)) / 60_000 >= target_minutes as i64
+}
+
 impl Idler {
     pub fn snapshot(&self, steam_id: &str) -> Vec<IdleGame> {
         self.accounts
@@ -66,6 +77,7 @@ impl Idler {
                         started_at: e.started_at,
                         sources: e.sources.iter().cloned().collect(),
                         target_minutes: e.target_minutes,
+                        boost_started_at: e.boost_started_at,
                     })
                     .collect()
             })
@@ -122,10 +134,21 @@ impl Idler {
             started_at: now_ms(),
             sources: BTreeSet::new(),
             target_minutes: None,
+            boost_started_at: None,
         });
         e.sources.insert(source.to_string());
         if target.is_some() {
             e.target_minutes = target;
+            e.boost_started_at = Some(now_ms());
+        }
+    }
+
+    /// Take back games that were just registered but never started.
+    fn forget(&self, steam_id: &str, appids: &[u32]) {
+        if let Some(map) = self.accounts.lock().unwrap().get_mut(steam_id) {
+            for appid in appids {
+                map.remove(appid);
+            }
         }
     }
 
@@ -167,7 +190,13 @@ impl Idler {
                 self.add_entry(steam_id, *appid, name, source, target_minutes);
                 results.push(StartResult { appid: *appid, ok: true, error: None });
             }
-            app.cm.set_games(steam_id, self.appids(steam_id)).await?;
+            if let Err(e) = app.cm.set_games(steam_id, self.appids(steam_id)).await {
+                // Steam was never told, so these must not be shown as idling.
+                let added: Vec<u32> = new_games.iter().map(|(appid, _)| *appid).collect();
+                self.forget(steam_id, &added);
+                self.emit(steam_id);
+                return Err(e);
+            }
         } else if !new_games.is_empty() {
             app.require_local_client(steam_id)?;
             let started: Vec<(u32, String, Result<()>)> = futures_util::stream::iter(new_games)
@@ -275,8 +304,7 @@ impl Idler {
                 .flat_map(|(sid, map)| {
                     map.iter().filter_map(move |(appid, e)| {
                         let target = e.target_minutes?;
-                        let elapsed_min = (now - e.started_at) / 60_000;
-                        (e.sources.contains("booster") && elapsed_min >= target as i64)
+                        (e.sources.contains("booster") && boost_reached(now, e.started_at, e.boost_started_at, target))
                             .then(|| (sid.clone(), *appid, e.name.clone()))
                     })
                 })
@@ -293,5 +321,37 @@ impl Idler {
                 }
             });
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_boost_counts_from_when_it_was_set() {
+        let minute = 60_000;
+        // idling for three hours, boost of 60 minutes set five minutes ago
+        let (started, boosted, now) = (0, 175 * minute, 180 * minute);
+        assert!(!boost_reached(now, started, Some(boosted), 60));
+        assert!(boost_reached(boosted + 60 * minute, started, Some(boosted), 60));
+        // no separate boost time recorded: count from the start of idling
+        assert!(boost_reached(now, started, None, 60));
+        assert!(!boost_reached(59 * minute, started, None, 60));
+    }
+
+    #[test]
+    fn setting_a_boost_on_a_running_game_restarts_the_count() {
+        let idler = Idler::default();
+        idler.add_entry("1", 440, "Team Fortress 2", "manual", None);
+        assert_eq!(idler.snapshot("1")[0].boost_started_at, None);
+        idler.add_entry("1", 440, "Team Fortress 2", "booster", Some(60));
+        let game = &idler.snapshot("1")[0];
+        assert_eq!(game.target_minutes, Some(60));
+        assert!(game.boost_started_at.is_some_and(|at| at >= game.started_at));
+        assert_eq!(game.sources, ["booster", "manual"]);
+
+        idler.forget("1", &[440]);
+        assert!(idler.snapshot("1").is_empty());
     }
 }

@@ -183,7 +183,14 @@ pub async fn install(app: &App, handle: &AppHandle) -> Result<(), String> {
     update.timeout = Some(DOWNLOAD_TIMEOUT);
     let failure = match download_and_hand_over(app, handle, &update).await {
         Ok(never) => match never {},
-        Err(e) => format!("Couldn't install the update: {}", explain(&e)),
+        Err(e) => {
+            let mut text = format!("Couldn't install the update: {}", explain(&e));
+            // Getting as far as the install step means everything was stopped to free the files.
+            if app.updates.state.lock().unwrap().phase == Phase::Installing {
+                text.push_str(". Idling, card farming and unlocking were stopped for it and need starting again");
+            }
+            text
+        }
     };
     desktop::clear_show_after_update(app);
     logbus::error("update", failure.clone());

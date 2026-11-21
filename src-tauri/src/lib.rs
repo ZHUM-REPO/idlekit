@@ -8,10 +8,61 @@ mod state;
 mod steam;
 mod updates;
 
+use config::Account;
 use state::App;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tauri::{AppHandle, Manager};
+
+/// How long auto-idle and farm-on-launch wait for Steam before giving up.
+const STARTUP_WAIT: Duration = Duration::from_secs(5 * 60);
+const STARTUP_POLL: Duration = Duration::from_secs(5);
+
+/// The account can idle right now: its Steam client is running and signed in
+/// to it, or its direct connection is online.
+fn can_idle(app: &App, account: &Account) -> bool {
+    if account.mode == "direct" {
+        app.cm.is_online(&account.steam_id)
+    } else {
+        app.require_local_client(&account.steam_id).is_ok()
+    }
+}
+
+/// Started at sign-in, IdleKit is usually up before the Steam client has
+/// finished starting, and sometimes before the network is. Waits for the
+/// account to become usable, so "start on launch" doesn't fail on the spot.
+async fn wait_until_usable(app: &App, account: &Account, wait: Duration, poll: Duration) -> bool {
+    if can_idle(app, account) {
+        return true;
+    }
+    let waiting_for = if account.mode == "direct" {
+        if secrets::get(&secrets::refresh_token_key(&account.steam_id)).is_none() {
+            return false;
+        }
+        if !app.settings().connect_direct_on_launch {
+            // Nothing has tried to connect yet. A failed attempt keeps retrying by itself.
+            let _ = app.cm.connect(&account.steam_id).await;
+        }
+        "the connection to Steam"
+    } else {
+        if app.local_steam().install_path.is_none() {
+            return false;
+        }
+        "the Steam client to start and sign in"
+    };
+    if can_idle(app, account) {
+        return true;
+    }
+    logbus::info("app", format!("{}: waiting for {waiting_for}", account.account_name));
+    let deadline = Instant::now() + wait;
+    while Instant::now() < deadline {
+        tokio::time::sleep(poll).await;
+        if can_idle(app, account) {
+            return true;
+        }
+    }
+    false
+}
 
 /// Work done once at launch: reconnect direct accounts, auto-idle, auto-farm,
 /// and a look for a newer version.
@@ -19,6 +70,15 @@ async fn startup(app: App, handle: AppHandle) {
     let cfg = app.config();
     let s = cfg.settings.clone();
     logbus::info("app", format!("IdleKit {} started", env!("CARGO_PKG_VERSION")));
+    if s.check_updates {
+        // On its own, so waiting for Steam below doesn't hold it up, and not
+        // the first thing the app does: Steam connections come first.
+        let (app, handle) = (app.clone(), handle.clone());
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_secs(8)).await;
+            updates::check(&app, &handle).await;
+        });
+    }
     if !app.helpers.helper_path().exists() {
         logbus::warn(
             "app",
@@ -43,6 +103,8 @@ async fn startup(app: App, handle: AppHandle) {
     }
     if s.auto_idle_on_launch {
         for a in cfg.accounts.iter().filter(|a| !a.auto_idle.is_empty()) {
+            // Whether or not Steam turned up: starting says what is wrong if it didn't.
+            wait_until_usable(&app, a, STARTUP_WAIT, STARTUP_POLL).await;
             let _ = app.load_games(&a.steam_id, false).await;
             let games = a.auto_idle.iter().map(|id| (*id, app.game_name(&a.steam_id, *id))).collect();
             if let Err(e) = app.idler.start(&app, &a.steam_id, games, "auto", None).await {
@@ -52,15 +114,13 @@ async fn startup(app: App, handle: AppHandle) {
     }
     if s.farm_on_launch {
         if let Some(active) = cfg.active_account.clone() {
+            if let Some(account) = cfg.account(&active) {
+                wait_until_usable(&app, account, STARTUP_WAIT, STARTUP_POLL).await;
+            }
             if let Err(e) = app.farming.start(app.clone(), active) {
                 logbus::warn("farming", format!("{e:#}"));
             }
         }
-    }
-    if s.check_updates {
-        // Not the first thing the app does: Steam connections come first.
-        tokio::time::sleep(Duration::from_secs(8)).await;
-        updates::check(&app, &handle).await;
     }
 }
 

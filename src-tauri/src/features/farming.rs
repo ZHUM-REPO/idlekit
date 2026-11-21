@@ -129,6 +129,16 @@ pub fn pick_active(games: &[FarmGame], settings: &FarmingSettings) -> (&'static 
     )
 }
 
+/// When farming ran out of games only because every one of them failed to
+/// start, the reason the first one gave. That is a failure, not "finished".
+pub fn nothing_started(games: &[FarmGame]) -> Option<String> {
+    let mut wanted = games.iter().filter(|g| g.status != "skipped");
+    if !wanted.clone().all(|g| g.status == "error") {
+        return None;
+    }
+    wanted.next().map(|g| if g.note.is_empty() { "Steam gave no reason".to_string() } else { g.note.clone() })
+}
+
 impl FarmingManager {
     pub fn status(&self, steam_id: &str) -> FarmStatus {
         self.status
@@ -262,6 +272,9 @@ async fn run(app: &App, steam_id: &str, token: &CancellationToken, st: &mut Farm
             .sum();
         let (phase, active) = pick_active(&st.games, &settings);
         if active.is_empty() {
+            if let Some(note) = nothing_started(&st.games) {
+                bail!("None of the games could be started: {note}");
+            }
             return Ok(true);
         }
 
@@ -488,5 +501,18 @@ mod tests {
             x.status = "done".into();
         }
         assert!(pick_active(&games, &s).1.is_empty());
+        assert_eq!(nothing_started(&games), None, "all done is a normal finish");
+
+        // every game that was wanted failed to start
+        for x in games.iter_mut() {
+            x.status = "error".into();
+            x.note = "Steam isn't running".into();
+        }
+        games[0].status = "skipped".into();
+        assert_eq!(nothing_started(&games).as_deref(), Some("Steam isn't running"));
+        // one that worked makes it a finish again
+        games[1].status = "done".into();
+        assert_eq!(nothing_started(&games), None);
+        assert_eq!(nothing_started(&[]), None);
     }
 }

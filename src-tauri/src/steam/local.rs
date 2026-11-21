@@ -33,6 +33,29 @@ pub struct LocalSteam {
     pub users: Vec<LocalUser>,
 }
 
+/// Whether the process Steam's registry entry names is still there. The
+/// entry outlives a crash of Steam, so a pid in it is not proof by itself.
+#[cfg(windows)]
+fn process_exists(pid: u32) -> bool {
+    use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, ERROR_INVALID_PARAMETER};
+    use windows_sys::Win32::System::Threading::{GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
+    const STILL_RUNNING: u32 = 259; // STILL_ACTIVE
+    // SAFETY: plain Win32 calls; the handle is checked before use and closed once.
+    unsafe {
+        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if handle.is_null() {
+            // "No such process" is the only answer that means gone. Anything
+            // else, such as no access to a Steam started as administrator,
+            // still means it is running.
+            return GetLastError() != ERROR_INVALID_PARAMETER;
+        }
+        let mut code = 0u32;
+        let known = GetExitCodeProcess(handle, &mut code) != 0;
+        CloseHandle(handle);
+        !known || code == STILL_RUNNING
+    }
+}
+
 #[cfg(windows)]
 fn registry_info() -> (Option<PathBuf>, Option<u32>, bool) {
     use winreg::enums::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE};
@@ -63,7 +86,7 @@ fn registry_info() -> (Option<PathBuf>, Option<u32>, bool) {
         .as_ref()
         .and_then(|k| k.get_value::<u32, _>("pid").ok())
         .unwrap_or(0);
-    (path, active_user, pid != 0)
+    (path, active_user, pid != 0 && process_exists(pid))
 }
 
 #[cfg(not(windows))]

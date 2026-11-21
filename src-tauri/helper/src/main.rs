@@ -8,6 +8,7 @@
 
 use serde::Deserialize;
 use serde_json::{json, Value};
+use std::cell::Cell;
 use std::io::{BufRead, Write};
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError};
@@ -15,7 +16,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use steamworks::{Client, SteamAPIInitError, UserStatsReceived, UserStatsStored};
 
-const STATS_WAIT: Duration = Duration::from_secs(12);
+/// How long Steam gets to load a game's stats the first time they are needed.
+const STATS_WAIT: Duration = Duration::from_secs(8);
 const STORE_WAIT: Duration = Duration::from_secs(8);
 
 // 0 = waiting, 1 = received OK, 2 = received with an error (game has no stats, etc.)
@@ -62,6 +64,15 @@ struct Helper {
     client: Client,
     stats_state: Arc<AtomicU8>,
     stored: Arc<AtomicBool>,
+    /// The wait for stats has been done once; later commands don't repeat it.
+    stats_waited: Cell<bool>,
+}
+
+/// What ends the wait for a game's stats. Current Steam clients load them when
+/// the game starts and send no callback for it, so the achievement list
+/// showing up counts as much as the callback older clients send.
+fn stats_settled(callback: u8, achievements_listed: bool) -> bool {
+    callback != STATS_PENDING || achievements_listed
 }
 
 impl Helper {
@@ -81,11 +92,18 @@ impl Helper {
     }
 
     fn wait_for_stats(&self) -> Result<(), String> {
-        let state = self.stats_state.clone();
-        self.pump_until(STATS_WAIT, || state.load(Ordering::SeqCst) != STATS_PENDING);
+        if !self.stats_waited.get() {
+            let state = self.stats_state.clone();
+            let stats = self.client.user_stats();
+            self.pump_until(STATS_WAIT, || {
+                stats_settled(state.load(Ordering::SeqCst), stats.get_num_achievements().is_ok())
+            });
+            // A game with no achievements shows neither sign. Having waited once
+            // is enough: without this, every later command would wait again.
+            self.stats_waited.set(true);
+        }
         match self.stats_state.load(Ordering::SeqCst) {
             STATS_FAILED => Err("Steam returned no stats for this game (it may have no achievements)".into()),
-            // On timeout, try anyway: some clients never post the callback but serve the data.
             _ => Ok(()),
         }
     }
@@ -102,10 +120,9 @@ impl Helper {
     fn achievements(&self) -> Result<Value, String> {
         self.wait_for_stats()?;
         let stats = self.client.user_stats();
-        let count = stats
-            .get_num_achievements()
-            .map_err(|_| "Steam did not return the achievement list".to_string())?;
-        if count == 0 {
+        // The binding reports a count of zero as an error, so this is also
+        // where a game without achievements ends up.
+        if stats.get_num_achievements().is_err() {
             return Ok(json!({ "achievements": [] }));
         }
         let names = stats.get_achievement_names().unwrap_or_default();
@@ -226,7 +243,7 @@ fn main() {
         st.store(r.result.is_ok(), Ordering::SeqCst);
     });
 
-    let helper = Helper { client, stats_state, stored };
+    let helper = Helper { client, stats_state, stored, stats_waited: Cell::new(false) };
     emit(&json!({ "event": "ready", "appid": appid, "pid": std::process::id() }));
 
     // Read stdin on a thread; EOF means IdleKit went away, so we exit too.
@@ -277,5 +294,20 @@ fn main() {
             Ok(data) => emit(&json!({ "id": req.id, "ok": true, "data": data })),
             Err(message) => emit(&json!({ "id": req.id, "ok": false, "error": message })),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_wait_for_stats_ends_on_either_sign() {
+        assert!(!stats_settled(STATS_PENDING, false));
+        // current Steam clients: no callback, but the list is there
+        assert!(stats_settled(STATS_PENDING, true));
+        // older clients: the callback, whatever it says
+        assert!(stats_settled(STATS_OK, false));
+        assert!(stats_settled(STATS_FAILED, false));
     }
 }

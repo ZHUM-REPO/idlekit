@@ -1,6 +1,35 @@
 // The parts of releasing that are plain data handling, kept apart from the
 // scripts that run them so they can be tested (npm run test:scripts).
 
+import crypto from "node:crypto";
+
+/**
+ * Whether an update signature (the text of a .sig file) was made for these
+ * bytes with the private half of the app's update key (`plugins.updater.pubkey`
+ * in tauri.conf.json). This is the check an installed copy makes before it
+ * installs an update: minisign, Ed25519 over the BLAKE2b-512 hash of the file.
+ */
+export function signatureMatchesKey({ pubkey, file, signature }) {
+  try {
+    const decode = (text) => Buffer.from(text.trim(), "base64");
+    const keyLine = decode(pubkey).toString("utf8").trim().split("\n")[1];
+    const keyRaw = decode(keyLine);
+    const key = crypto.createPublicKey({
+      key: Buffer.concat([Buffer.from("302a300506032b6570032100", "hex"), keyRaw.subarray(10)]),
+      format: "der",
+      type: "spki",
+    });
+    const lines = decode(signature).toString("utf8").split("\n");
+    const sig = decode(lines[1]);
+    if (!sig.subarray(2, 10).equals(keyRaw.subarray(2, 10))) return false;
+    const hashed = sig.subarray(0, 2).toString("latin1") === "ED";
+    const message = hashed ? crypto.createHash("blake2b512").update(file).digest() : file;
+    return crypto.verify(null, message, key, sig.subarray(10));
+  } catch {
+    return false;
+  }
+}
+
 /** The app version: `version = "…"` under [package] in src-tauri/Cargo.toml. */
 export function readVersion(cargoToml) {
   const section = cargoToml.split(/^\[/m).find((s) => s.startsWith("package]"));

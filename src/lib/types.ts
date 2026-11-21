@@ -114,6 +114,8 @@ export interface IdleGame {
   startedAt: number;
   sources: string[];
   targetMinutes: number | null;
+  /** What targetMinutes is counted from: when the boost was set. */
+  boostStartedAt: number | null;
 }
 
 export interface IdleSnapshot {
@@ -235,6 +237,18 @@ export interface InvItem {
   marketable: boolean;
   count: number;
   assetIds: string[];
+}
+
+/** How Steam's market charges in the account's wallet currency (minor units). */
+export interface Wallet {
+  /** Steam's currency id (1 = USD, 3 = EUR, 31 = SAR, …). */
+  currency: number;
+  steamPercent: number;
+  steamMinimum: number;
+  feeBase: number;
+  publisherPercent: number;
+  increment: number;
+  marketMinimum: number;
 }
 
 export interface PriceInfo {

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { test } from "node:test";
@@ -9,6 +10,7 @@ import {
   findInstaller,
   readVersion,
   releaseNotes,
+  signatureMatchesKey,
   updateEndpoint,
   updateManifest,
 } from "./release.mjs";
@@ -87,4 +89,32 @@ test("release notes name the file to download", () => {
   assert.match(text, /offers this version itself/);
   assert.match(releaseNotes({ version: "0.3.0", installer: "a.exe", changes: "" }), /^IdleKit 0\.3\.0/);
   assert.match(releaseNotes({ version: "0.3.0", installer: "a.exe", selfUpdating: false }), /cannot update itself/);
+});
+
+// An update key and a signature in the formats `tauri signer` writes them.
+function signingKey() {
+  const { publicKey, privateKey } = crypto.generateKeyPairSync("ed25519");
+  const id = crypto.randomBytes(8);
+  const raw = publicKey.export({ format: "der", type: "spki" }).subarray(-32);
+  const b64 = (buffer) => Buffer.from(buffer).toString("base64");
+  const pubkey = b64(`untrusted comment: minisign public key\n${b64(Buffer.concat([Buffer.from("Ed"), id, raw]))}\n`);
+  const sign = (file) => {
+    const signature = crypto.sign(null, crypto.createHash("blake2b512").update(file).digest(), privateKey);
+    const trusted = "timestamp:1\tfile:setup.exe";
+    const global = crypto.sign(null, Buffer.concat([signature, Buffer.from(trusted)]), privateKey);
+    const lines = ["untrusted comment: signature from tauri secret key", b64(Buffer.concat([Buffer.from("ED"), id, signature])), `trusted comment: ${trusted}`, b64(global)];
+    return b64(lines.join("\n") + "\n");
+  };
+  return { pubkey, sign };
+}
+
+test("a signature counts only for the same bytes and the app's own key", () => {
+  const ours = signingKey();
+  const theirs = signingKey();
+  const file = Buffer.from("the installer");
+  assert.equal(signatureMatchesKey({ pubkey: ours.pubkey, file, signature: ours.sign(file) }), true);
+  assert.equal(signatureMatchesKey({ pubkey: ours.pubkey, file: Buffer.from("the installer!"), signature: ours.sign(file) }), false);
+  assert.equal(signatureMatchesKey({ pubkey: ours.pubkey, file, signature: theirs.sign(file) }), false);
+  assert.equal(signatureMatchesKey({ pubkey: ours.pubkey, file, signature: "not a signature" }), false);
+  assert.equal(signatureMatchesKey({ pubkey: "", file, signature: ours.sign(file) }), false);
 });

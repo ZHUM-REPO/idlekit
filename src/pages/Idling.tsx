@@ -162,7 +162,9 @@ export function IdlingPage() {
 function IdleRow({ game, now, first, onStop }: { game: IdleGame; now: number; first: boolean; onStop: () => void }) {
   const elapsed = now - game.startedAt;
   const target = game.targetMinutes ? game.targetMinutes * 60_000 : null;
-  const pct = target ? Math.min(100, (elapsed / target) * 100) : null;
+  // A boost counts from when it was set, which can be long after the game began idling.
+  const boosted = Math.max(0, now - (game.boostStartedAt ?? game.startedAt));
+  const pct = target ? Math.min(100, (boosted / target) * 100) : null;
   return (
     <div className={cx("flex items-center gap-5 px-4 py-3.5", !first && "border-t border-line")}>
       <div className="w-[136px] flex-none overflow-hidden rounded border border-line">
@@ -181,7 +183,7 @@ function IdleRow({ game, now, first, onStop }: { game: IdleGame; now: number; fi
               <div className="h-full bg-run" style={{ width: `${pct}%` }} />
             </div>
             <span className="num text-[12px] text-faint">
-              {Math.floor(elapsed / 60_000)} of {game.targetMinutes} min
+              {Math.floor(boosted / 60_000)} of {game.targetMinutes} min
             </span>
           </div>
         )}

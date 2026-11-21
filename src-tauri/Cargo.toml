@@ -1,6 +1,6 @@
 [package]
 name = "idlekit"
-version = "0.2.0"
+version = "0.2.1"
 description = "Steam idler: card farming, achievement manager, playtime booster and market seller"
 edition = "2021"
 default-run = "idlekit"
@@ -42,6 +42,7 @@ dirs = "6"
 [target.'cfg(windows)'.dependencies]
 winreg = "0.56"
 keyring = { version = "3", features = ["windows-native"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Threading"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 keyring = { version = "3", features = ["apple-native"] }

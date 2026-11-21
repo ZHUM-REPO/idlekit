@@ -275,7 +275,8 @@ async fn set_one(app: &App, appid: u32, api_name: &str) -> Result<bool> {
             Duration::from_secs(30),
         )
         .await?;
-    Ok(v.pointer(&format!("/results/{api_name}")).and_then(Value::as_bool).unwrap_or(false))
+    // Looked up by key, not by JSON pointer: an API name may contain '/' or '~'.
+    Ok(v.get("results").and_then(|r| r.get(api_name)).and_then(Value::as_bool).unwrap_or(false))
 }
 
 /// Returns Ok(true) when the game's queue finished, Ok(false) when cancelled.
@@ -308,6 +309,11 @@ async fn unlock_game(
     let helper = app.helpers.ensure(appid).await?;
     let data = helper.request("achievements", Value::Null, Duration::from_secs(40)).await?;
     let list = data.get("achievements").and_then(Value::as_array).cloned().unwrap_or_default();
+    // Not "finished": that would drop the game from the queue, and an empty
+    // list is also what Steam gives while it is still loading the game's data.
+    if list.is_empty() {
+        bail!("Steam returned no achievements for this game. If it has some, try again in a moment");
+    }
 
     let protected: HashSet<String> = app
         .steam_path()

@@ -1,3 +1,4 @@
+import type { Wallet } from "./types";
 export function hoursText(minutes: number): string {
   if (minutes <= 0) return "Never played";
   const h = minutes / 60;
@@ -35,6 +36,33 @@ export function timeOfDay(ts: number): string {
 export function dateText(unixSeconds: number): string {
   if (!unixSeconds) return "";
   return new Date(unixSeconds * 1000).toLocaleDateString([], { year: "numeric", month: "short", day: "numeric" });
+}
+
+/** A US-dollar wallet: what is assumed until Steam has said otherwise. */
+export const US_DOLLAR_WALLET: Wallet = {
+  currency: 1,
+  steamPercent: 0.05,
+  steamMinimum: 1,
+  feeBase: 0,
+  publisherPercent: 0.1,
+  increment: 1,
+  marketMinimum: 1,
+};
+
+/** Mirror of the Rust fee math: what a buyer pays for you to receive this much. */
+export function buyerPays(seller: number, w: Wallet): number {
+  if (seller <= 0) return 0;
+  const steam = Math.floor(Math.max(seller * w.steamPercent, w.steamMinimum) + w.feeBase);
+  const publisher = w.publisherPercent > 0 ? Math.floor(Math.max(seller * w.publisherPercent, 1)) : 0;
+  return seller + steam + publisher;
+}
+
+/** Mirror of the Rust fee math: the most you receive for a buyer price. */
+export function sellerReceives(buyer: number, w: Wallet): number {
+  if (buyer < buyerPays(Math.max(w.marketMinimum, 1), w)) return 0;
+  let s = Math.floor(Math.max(0, buyer - w.feeBase) / (1 + w.steamPercent + w.publisherPercent)) + 2;
+  while (s > 0 && buyerPays(s, w) > buyer) s--;
+  return s;
 }
 
 // Steam wallet currency ids -> ISO 4217 codes.

@@ -24,6 +24,7 @@ import type {
   StartResult,
   UnlockStatus,
   UpdateState,
+  Wallet,
 } from "./types";
 
 export const inTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -133,7 +134,7 @@ export const api = {
 
   inventory: (steamId: string) => call<InvItem[]>("market_inventory", { steamId }),
   prices: (steamId: string, hashNames: string[]) =>
-    call<{ currency: number; items: PriceInfo[] }>("market_prices", { steamId, hashNames }),
+    call<{ currency: number; wallet: Wallet; items: PriceInfo[] }>("market_prices", { steamId, hashNames }),
   sell: (steamId: string, items: { marketHashName: string; assetIds: string[]; buyerCents: number }[]) =>
     call<SellOutcome[]>("market_sell", { steamId, items }),
   listings: (steamId: string) => call<Listing[]>("market_listings", { steamId }),

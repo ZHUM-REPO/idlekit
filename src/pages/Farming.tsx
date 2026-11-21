@@ -173,7 +173,7 @@ export function FarmingPage() {
                 checked={fs.skipRefundable}
                 onChange={(v) => void useApp.getState().saveSettings({ farming: { ...fs, skipRefundable: v } })}
               />
-              Skip games bought in the last 14 days with under 2 h played, so idling can't void a refund
+              Skip games bought in the last 14 days with under 2 h played, so idling doesn't cost you a refund. Matched by name, so bundle purchases can be missed.
             </label>
           </div>
         </div>

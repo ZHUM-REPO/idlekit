@@ -7,12 +7,13 @@
 //
 // A build made without the signing key has no signature. It is still released,
 // as an installer only, and its release page says it cannot update itself.
+// A build signed with the wrong key is not released at all.
 //
 //   node scripts/release-files.mjs [--bundle <folder with the installer>] [--out <folder>]
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { changelogSection, findInstaller, readVersion, releaseNotes, updateManifest } from "./lib/release.mjs";
+import { changelogSection, findInstaller, readVersion, releaseNotes, signatureMatchesKey, updateManifest } from "./lib/release.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const arg = (name, fallback) => {
@@ -35,6 +36,18 @@ fs.rmSync(outDir, { recursive: true, force: true });
 fs.mkdirSync(outDir, { recursive: true });
 fs.copyFileSync(path.join(bundleDir, installer), path.join(outDir, installer));
 if (signed) {
+  // The check an installed copy makes. A signature from any other key would be
+  // published fine and then refused by every copy that tries to update.
+  const pubkey = JSON.parse(fs.readFileSync(path.join(root, "src-tauri", "tauri.conf.json"), "utf8")).plugins.updater.pubkey;
+  const matches = signatureMatchesKey({
+    pubkey,
+    file: fs.readFileSync(path.join(bundleDir, installer)),
+    signature: fs.readFileSync(signatureFile, "utf8"),
+  });
+  if (!matches) {
+    console.log(`::error::${installer} is signed, but not with the update key built into the app (plugins.updater.pubkey in src-tauri/tauri.conf.json). Installed copies would refuse it, so nothing is published. Check the TAURI_SIGNING_PRIVATE_KEY secret.`);
+    process.exit(1);
+  }
   fs.copyFileSync(signatureFile, path.join(outDir, `${installer}.sig`));
   const manifest = updateManifest({ version, repo, installer, signature: fs.readFileSync(signatureFile, "utf8"), notes: changes });
   fs.writeFileSync(path.join(outDir, "latest.json"), JSON.stringify(manifest, null, 2) + "\n");

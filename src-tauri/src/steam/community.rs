@@ -279,6 +279,12 @@ pub fn parse_badges_page(html: &str) -> BadgesPage {
         let Some(appid) = appid_re.captures(href).and_then(|c| c[1].parse::<u32>().ok()) else {
             continue; // community/event badges have no app
         };
+        // A game's foil badge has a row of its own (…/gamecards/730/?border=1)
+        // that never shows card drops. Left in, it would stand for the game
+        // wherever one row per game is expected, and report no drops left.
+        if href.contains("border=1") {
+            continue;
+        }
         let drops = row
             .select(&sel(".progress_info_bold"))
             .next()
@@ -542,6 +548,23 @@ mod tests {
  </div>
 </div>
 <div class="pageLinks"><a class="pagelink" href="?p=2">2</a><a class="pagelink" href="?p=3">3</a></div></html>"#;
+
+    #[test]
+    fn foil_badge_rows_do_not_stand_in_for_the_game() {
+        let html = r#"<html><script>g_steamID = "76561197960265729";</script>
+<div class="badge_row is_link">
+ <a class="badge_row_overlay" href="https://steamcommunity.com/id/me/gamecards/730/"></a>
+ <span class="progress_info_bold">3 card drops remaining</span>
+ <div class="badge_title">Counter-Strike 2</div>
+</div>
+<div class="badge_row is_link">
+ <a class="badge_row_overlay" href="https://steamcommunity.com/id/me/gamecards/730/?border=1"></a>
+ <div class="badge_title">Counter-Strike 2 Foil Badge</div>
+</div></html>"#;
+        let games = parse_badges_page(html).games;
+        assert_eq!(games.len(), 1);
+        assert_eq!((games[0].appid, games[0].drops_remaining), (730, 3));
+    }
 
     #[test]
     fn badges_page() {

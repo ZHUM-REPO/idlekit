@@ -60,29 +60,105 @@ pub struct SellOutcome {
 
 // ----------------------------------------------------------------- fees ---
 
-/// Steam takes 5% (min 1) plus a 10% publisher fee (min 1) for Steam items.
-pub fn buyer_pays(seller_receives: u32) -> u32 {
-    if seller_receives == 0 {
-        return 0;
-    }
-    let steam_fee = ((seller_receives as f64) * 0.05).floor().max(1.0) as u32;
-    let publisher_fee = ((seller_receives as f64) * 0.10).floor().max(1.0) as u32;
-    seller_receives + steam_fee + publisher_fee
+/// How the market charges in the signed-in account's wallet currency. Steam
+/// publishes these numbers on the market page (`g_rgWalletInfo`) and its own
+/// sell dialog computes from them; the defaults are a US-dollar wallet's.
+/// Amounts are in the currency's minor units.
+#[derive(Serialize, Clone, Copy, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Wallet {
+    /// Steam's currency id (1 = USD, 3 = EUR, 31 = SAR, …).
+    pub currency: u32,
+    pub steam_percent: f64,
+    pub steam_minimum: u32,
+    pub fee_base: u32,
+    pub publisher_percent: f64,
+    /// Smallest step between two prices.
+    pub increment: u32,
+    /// Smallest amount a seller can ask for.
+    pub market_minimum: u32,
 }
 
-/// Largest amount the seller can receive so the buyer pays at most `buyer_price`.
-pub fn seller_receives(buyer_price: u32) -> u32 {
-    if buyer_price < 3 {
-        return 0;
+impl Default for Wallet {
+    fn default() -> Self {
+        Wallet {
+            currency: 1,
+            steam_percent: 0.05,
+            steam_minimum: 1,
+            fee_base: 0,
+            publisher_percent: 0.10,
+            increment: 1,
+            market_minimum: 1,
+        }
     }
-    let mut s = ((buyer_price as f64) / 1.15).floor() as u32 + 2;
-    while s > 0 && buyer_pays(s) > buyer_price {
-        s -= 1;
+}
+
+impl Wallet {
+    /// Reads the wallet block of the market page; `None` when the page has
+    /// none (signed out). A number that is missing or implausible keeps its
+    /// US-dollar default.
+    pub fn parse(html: &str) -> Option<Wallet> {
+        let field = |name: &str| -> Option<f64> {
+            Regex::new(&format!(r#""{name}"\s*:\s*"?([0-9]+(?:\.[0-9]+)?)"?"#))
+                .ok()?
+                .captures(html)
+                .and_then(|c| c[1].parse::<f64>().ok())
+        };
+        let whole = |name: &str, low: f64, high: f64| field(name).filter(|v| (low..=high).contains(v)).map(|v| v as u32);
+        let share = |name: &str| field(name).filter(|v| (0.0..0.5).contains(v));
+        let d = Wallet::default();
+        Some(Wallet {
+            currency: whole("wallet_currency", 1.0, 1000.0)?,
+            steam_percent: share("wallet_fee_percent").unwrap_or(d.steam_percent),
+            steam_minimum: whole("wallet_fee_minimum", 1.0, 1e7).unwrap_or(d.steam_minimum),
+            fee_base: whole("wallet_fee_base", 0.0, 1e7).unwrap_or(d.fee_base),
+            publisher_percent: share("wallet_publisher_fee_percent_default").unwrap_or(d.publisher_percent),
+            increment: whole("wallet_currency_increment", 1.0, 1e7).unwrap_or(d.increment),
+            market_minimum: whole("wallet_market_minimum", 1.0, 1e7).unwrap_or(d.market_minimum),
+        })
     }
-    s
+
+    /// What a buyer pays for the seller to receive this much: Steam's fee
+    /// (a share with a minimum, plus a base) and the game's fee (a share,
+    /// at least 1), each rounded down, the way Steam's sell dialog does it.
+    pub fn buyer_pays(&self, seller_receives: u32) -> u32 {
+        if seller_receives == 0 {
+            return 0;
+        }
+        let amount = seller_receives as f64;
+        let steam_fee = ((amount * self.steam_percent).max(self.steam_minimum as f64) + self.fee_base as f64).floor() as u32;
+        let publisher_fee =
+            if self.publisher_percent > 0.0 { (amount * self.publisher_percent).max(1.0).floor() as u32 } else { 0 };
+        seller_receives + steam_fee + publisher_fee
+    }
+
+    /// Largest amount the seller can receive so the buyer pays at most `buyer_price`.
+    pub fn seller_receives(&self, buyer_price: u32) -> u32 {
+        if buyer_price < self.lowest_price() {
+            return 0;
+        }
+        let rate = 1.0 + self.steam_percent + self.publisher_percent;
+        let mut s = ((buyer_price.saturating_sub(self.fee_base) as f64) / rate).floor() as u32 + 2;
+        while s > 0 && self.buyer_pays(s) > buyer_price {
+            s -= 1;
+        }
+        s
+    }
+
+    /// The lowest price a buyer can be asked to pay.
+    pub fn lowest_price(&self) -> u32 {
+        self.buyer_pays(self.market_minimum.max(1))
+    }
+
+    /// A price step: at least one increment, and a whole number of them.
+    fn step(&self, cents: u32) -> u32 {
+        let inc = self.increment.max(1);
+        cents.max(1).div_ceil(inc) * inc
+    }
 }
 
 pub fn suggest_price(
+    wallet: &Wallet,
     lowest_sell: Option<u32>,
     highest_buy: Option<u32>,
     strategy: &str,
@@ -90,14 +166,15 @@ pub fn suggest_price(
     min_cents: u32,
     max_cents: u32,
 ) -> Option<u32> {
+    let floor = wallet.lowest_price();
     let base = match strategy {
         "matchLowest" => lowest_sell,
-        "aboveHighestBuy" => highest_buy.map(|b| b + undercut.max(1)),
-        _ => lowest_sell.map(|l| l.saturating_sub(undercut)),
+        "aboveHighestBuy" => highest_buy.map(|b| b + wallet.step(undercut)),
+        _ => lowest_sell.map(|l| if undercut == 0 { l } else { l.saturating_sub(wallet.step(undercut)) }),
     }
     .or(lowest_sell)
-    .or_else(|| highest_buy.map(|b| b + 1))?;
-    let mut p = base.max(3);
+    .or_else(|| highest_buy.map(|b| b + wallet.step(1)))?;
+    let mut p = base.max(floor);
     if min_cents > 0 {
         p = p.max(min_cents);
     }
@@ -107,10 +184,10 @@ pub fn suggest_price(
     // Never undercut below what a buyer is already offering.
     if let Some(b) = highest_buy {
         if strategy != "aboveHighestBuy" && p <= b {
-            p = b + 1;
+            p = b + wallet.step(1);
         }
     }
-    Some(p.max(3))
+    Some(p.max(floor))
 }
 
 // ------------------------------------------------------------ inventory ---
@@ -221,12 +298,9 @@ pub async fn inventory(ws: &WebSession) -> Result<Vec<InvItem>> {
 
 // -------------------------------------------------------------- pricing ---
 
-pub async fn wallet_currency(ws: &WebSession) -> Result<u32> {
+pub async fn wallet(ws: &WebSession) -> Result<Wallet> {
     let html = ws.get_text("https://steamcommunity.com/market/").await?;
-    Ok(Regex::new(r#""wallet_currency"\s*:\s*(\d+)"#)?
-        .captures(&html)
-        .and_then(|c| c[1].parse().ok())
-        .unwrap_or(1))
+    Wallet::parse(&html).ok_or_else(|| anyhow!("Steam's market page showed no wallet"))
 }
 
 pub async fn item_name_id(ws: &WebSession, hash_name: &str) -> Result<u64> {
@@ -401,27 +475,64 @@ mod tests {
 
     #[test]
     fn fee_math_roundtrips() {
-        assert_eq!(buyer_pays(1), 3);
-        assert_eq!(buyer_pays(100), 115);
-        assert_eq!(buyer_pays(20), 23);
-        for b in 3..2000u32 {
-            let s = seller_receives(b);
-            assert!(buyer_pays(s) <= b, "b={b} s={s}");
-            assert!(buyer_pays(s + 1) > b, "not maximal at b={b}");
+        let usd = Wallet::default();
+        assert_eq!(usd.buyer_pays(1), 3);
+        assert_eq!(usd.buyer_pays(100), 115);
+        assert_eq!(usd.buyer_pays(20), 23);
+        assert_eq!(usd.lowest_price(), 3);
+        assert_eq!(usd.seller_receives(2), 0);
+        // a wallet with bigger minimums, a base fee and coarser prices
+        let other = Wallet { steam_minimum: 30, fee_base: 5, increment: 10, market_minimum: 50, ..usd };
+        assert_eq!(other.buyer_pays(100), 100 + 35 + 10);
+        assert_eq!(other.buyer_pays(1000), 1000 + 55 + 100);
+        assert_eq!(other.lowest_price(), 50 + 35 + 5);
+        assert_eq!(other.seller_receives(other.lowest_price() - 1), 0);
+        // a wallet whose games take no share
+        let no_share = Wallet { publisher_percent: 0.0, ..usd };
+        assert_eq!(no_share.buyer_pays(100), 105);
+        for wallet in [usd, other, no_share] {
+            for b in wallet.lowest_price()..3000u32 {
+                let s = wallet.seller_receives(b);
+                assert!(s > 0 && wallet.buyer_pays(s) <= b, "b={b} s={s} {wallet:?}");
+                assert!(wallet.buyer_pays(s + 1) > b, "not maximal at b={b} {wallet:?}");
+            }
         }
-        assert_eq!(seller_receives(2), 0);
+    }
+
+    #[test]
+    fn wallet_block_of_the_market_page() {
+        let page = r#"<script>var g_rgWalletInfo = {"wallet_currency":31,"wallet_country":"SA","wallet_fee":"1",
+            "wallet_fee_minimum":"4","wallet_fee_percent":"0.05","wallet_publisher_fee_percent_default":"0.10",
+            "wallet_fee_base":"0","wallet_currency_increment":"1","wallet_market_minimum":"4","wallet_balance":"1250","success":1};</script>"#;
+        let w = Wallet::parse(page).unwrap();
+        assert_eq!(w, Wallet { currency: 31, steam_minimum: 4, market_minimum: 4, ..Wallet::default() });
+        assert_eq!(w.buyer_pays(4), 4 + 4 + 1);
+        assert_eq!(w.lowest_price(), 9);
+        // signed out, or a page without the block
+        assert_eq!(Wallet::parse("<html></html>"), None);
+        // nonsense is not believed
+        let odd = Wallet::parse(r#"{"wallet_currency":3,"wallet_fee_percent":"7","wallet_fee_minimum":"0"}"#);
+        assert_eq!(odd, Some(Wallet { currency: 3, ..Wallet::default() }));
     }
 
     #[test]
     fn pricing_strategies() {
-        assert_eq!(suggest_price(Some(20), Some(15), "undercutLowest", 1, 3, 0), Some(19));
-        assert_eq!(suggest_price(Some(20), Some(19), "undercutLowest", 1, 3, 0), Some(20));
-        assert_eq!(suggest_price(Some(20), Some(15), "matchLowest", 1, 3, 0), Some(20));
-        assert_eq!(suggest_price(Some(20), Some(15), "aboveHighestBuy", 1, 3, 0), Some(16));
-        assert_eq!(suggest_price(Some(4), None, "undercutLowest", 5, 10, 0), Some(10));
-        assert_eq!(suggest_price(Some(500), None, "undercutLowest", 1, 3, 100), Some(100));
-        assert_eq!(suggest_price(None, None, "undercutLowest", 1, 3, 0), None);
-        assert_eq!(suggest_price(None, Some(7), "undercutLowest", 1, 3, 0), Some(8));
+        let w = Wallet::default();
+        assert_eq!(suggest_price(&w, Some(20), Some(15), "undercutLowest", 1, 3, 0), Some(19));
+        assert_eq!(suggest_price(&w, Some(20), Some(19), "undercutLowest", 1, 3, 0), Some(20));
+        assert_eq!(suggest_price(&w, Some(20), Some(15), "matchLowest", 1, 3, 0), Some(20));
+        assert_eq!(suggest_price(&w, Some(20), Some(15), "aboveHighestBuy", 1, 3, 0), Some(16));
+        assert_eq!(suggest_price(&w, Some(4), None, "undercutLowest", 5, 10, 0), Some(10));
+        assert_eq!(suggest_price(&w, Some(500), None, "undercutLowest", 1, 3, 100), Some(100));
+        assert_eq!(suggest_price(&w, None, None, "undercutLowest", 1, 3, 0), None);
+        assert_eq!(suggest_price(&w, None, Some(7), "undercutLowest", 1, 3, 0), Some(8));
+        assert_eq!(suggest_price(&w, Some(20), Some(15), "undercutLowest", 0, 0, 0), Some(20));
+        assert_eq!(suggest_price(&w, Some(1), None, "undercutLowest", 1, 0, 0), Some(3));
+        // prices move in steps of 10 and can't go under the wallet's lowest price
+        let coarse = Wallet { steam_minimum: 30, increment: 10, market_minimum: 50, ..w };
+        assert_eq!(suggest_price(&coarse, Some(500), Some(300), "undercutLowest", 1, 0, 0), Some(490));
+        assert_eq!(suggest_price(&coarse, Some(500), Some(300), "aboveHighestBuy", 1, 0, 0), Some(310));
+        assert_eq!(suggest_price(&coarse, Some(60), None, "undercutLowest", 1, 0, 0), Some(coarse.lowest_price()));
     }
 
     #[test]
