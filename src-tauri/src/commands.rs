@@ -13,6 +13,7 @@ use crate::steam::cm::CmStatus;
 use crate::steam::community::{self, WebSession};
 use crate::steam::local::LocalSteam;
 use crate::steam::market::{self, InvItem, Listing, PriceInfo, SellOutcome};
+use crate::steam::pictures;
 use crate::steam::{schema, webapi};
 use crate::updates::{self, UpdateState};
 use serde::{Deserialize, Serialize};
@@ -436,6 +437,37 @@ pub async fn remove_manual_game(app: State<'_, App>, steam_id: String, appid: u3
 pub async fn resolve_game_art(app: State<'_, App>, appids: Vec<u32>) -> CmdResult<HashMap<u32, GameArt>> {
     let language = app.settings().language;
     Ok(app.art.resolve(&app.http, &language, &appids).await)
+}
+
+/// Which of these pictures are on disk already. Never touches the network, so
+/// it is answered at once however slow the connection is.
+#[tauri::command]
+pub async fn pictures_cached(app: State<'_, App>, items: Vec<pictures::Ask>) -> CmdResult<HashMap<String, pictures::Cached>> {
+    let mut found = HashMap::new();
+    for ask in items.iter().take(2000) {
+        if ask.kind == "avatar" {
+            app.adopt_local_avatar(&ask.id);
+        }
+        if let Some(cached) = app.pictures.cached(ask) {
+            found.insert(pictures::key(&ask.kind, &ask.id), cached);
+        }
+    }
+    Ok(found)
+}
+
+/// One picture's file on disk, downloaded first when it isn't there yet. Only
+/// a few downloads run at a time; the others wait.
+#[tauri::command]
+pub async fn picture_fetch(
+    app: State<'_, App>,
+    kind: String,
+    id: String,
+    urls: Vec<String>,
+    current: Option<String>,
+    certain: bool,
+) -> CmdResult<Option<String>> {
+    let ask = pictures::Ask { kind, id, current };
+    Ok(app.pictures.fetch(&app.http, &ask, &urls, certain).await)
 }
 
 /// Toggle membership of an appid in one of the per-account lists.

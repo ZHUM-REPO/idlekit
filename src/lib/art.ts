@@ -1,6 +1,7 @@
-// Game images: which URLs to try for a game's icon, banner and cover, plus the
-// batched lookup that asks the backend (Steam's public store API) for the
-// paths that can't be built from an app id alone.
+// Game images: which URLs a game's icon, banner and cover can be fetched from,
+// plus the batched lookup that asks the backend (Steam's public store API) for
+// the paths that can't be built from an app id alone. The fetching itself, a
+// few pictures at a time and kept on disk, is in pictures.ts.
 //
 // Three kinds of art:
 //   icon   - the small square Steam shows next to a game's name
@@ -29,7 +30,6 @@ const LEGACY = "https://cdn.cloudflare.steamstatic.com/steam/apps";
 
 const CHUNK = 100;
 const RETRY_LOOKUP_MS = 2 * 60_000;
-const RETRY_IMAGE_MS = 5 * 60_000;
 
 // ------------------------------------------------------------------ lookup
 
@@ -94,7 +94,7 @@ function classicIcon(url: string | null | undefined): string | undefined {
   return m ? `https://cdn.cloudflare.steamstatic.com/steamcommunity/public/images/apps/${m[1]}/${m[2]}.jpg` : undefined;
 }
 
-/** Every URL worth trying for this art, best first. */
+/** Every URL worth trying for this art, best first. The backend takes the first that works. */
 export function sources(kind: ArtKind, appid: number, art: ArtEntry): string[] {
   const list =
     kind === "icon"
@@ -109,40 +109,9 @@ export function sources(kind: ArtKind, appid: number, art: ArtEntry): string[] {
   return [...new Set(list.filter((u): u is string => !!u))];
 }
 
-// Remembered across remounts, so a page you return to neither re-tries broken
-// URLs nor swaps an image that's already showing for a "better" one.
-const failedAt = new Map<string, number>();
-const loaded = new Map<string, string>();
-
-function usable(url: string) {
-  const at = failedAt.get(url);
-  return at === undefined || Date.now() - at > RETRY_IMAGE_MS;
-}
-
-/**
- * The URL to show right now, or undefined when there is none (yet).
- * With `guess` off, nothing is tried until the lookup has answered, so a
- * lookup that is about to land isn't raced by a request for a guessed URL.
- */
-export function pick(kind: ArtKind, appid: number, art: ArtEntry, guess = true): string | undefined {
-  const known = loaded.get(`${kind}:${appid}`);
-  if (known && usable(known)) return known;
-  if (art === undefined && !guess) return undefined;
-  return sources(kind, appid, art).find(usable);
-}
-
-export function markLoaded(kind: ArtKind, appid: number, url: string) {
-  loaded.set(`${kind}:${appid}`, url);
-}
-
-export function markFailed(url: string) {
-  failedAt.set(url, Date.now());
-}
-
 // Back online: forget what failed while the connection was down and look again.
 if (typeof window !== "undefined") {
   window.addEventListener("online", () => {
-    failedAt.clear();
     retryAt.clear();
     useArtStore.setState((s) => ({
       byApp: Object.fromEntries(Object.entries(s.byApp).filter(([, v]) => v !== null)),

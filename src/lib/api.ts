@@ -128,6 +128,12 @@ export const api = {
     call<void>("set_in_list", { steamId, list, appid, on }),
   /** Keyed by app id. Games Steam couldn't be reached for are left out. */
   resolveGameArt: (appids: number[]) => call<Record<string, GameArtUrls>>("resolve_game_art", { appids }),
+  /** Which of these pictures are on disk already ("kind:id" → file). No network. */
+  picturesCached: (items: { kind: string; id: string; current?: string }[]) =>
+    call<Record<string, { file: string; stale: boolean; none: boolean }>>("pictures_cached", { items }),
+  /** A picture's file on disk, fetched first from the first of `urls` that works. `certain`: the addresses are not guesses. */
+  pictureFetch: (kind: string, id: string, urls: string[], current: string | null, certain: boolean) =>
+    call<string | null>("picture_fetch", { kind, id, urls, current, certain }),
 
   idleStart: (steamId: string, games: { appid: number; name: string }[]) =>
     call<StartResult[]>("idle_start", { steamId, games }),

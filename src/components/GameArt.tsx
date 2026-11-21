@@ -1,33 +1,55 @@
-import { useEffect, useReducer, useState, type CSSProperties } from "react";
-import { markFailed, markLoaded, pick, requestArt, useArtStore, type ArtEntry, type ArtKind } from "../lib/art";
+import { useEffect, useRef, useState, type CSSProperties, type RefObject } from "react";
+import { requestArt, sources, useArtStore, type ArtEntry } from "../lib/art";
+import { pictureBroken, useFetchPicture, usePictureStatus } from "../lib/pictures";
 import { cx } from "./ui";
 
 function hue(appid: number) {
   return (appid * 47) % 360;
 }
 
-/** A game's looked-up art; asks for it on first use. */
-function useArt(appid: number) {
+/** A game's looked-up art. It is only asked for when `wanted`: a picture already on disk needs no lookup. */
+function useArt(appid: number, wanted: boolean) {
   const art = useArtStore((s) => s.byApp[appid]);
   useEffect(() => {
-    if (!art) requestArt(appid);
-  }, [appid, art]);
+    if (wanted && !art) requestArt(appid);
+  }, [appid, art, wanted]);
   return art;
 }
 
 /**
- * Whether to start on guessable URLs. The lookup is usually answered from the
- * cache within a few milliseconds, so it gets a short head start; after that,
- * guessing beats waiting on a slow or unreachable Steam.
+ * Whether to go ahead with guessable URLs. The lookup is usually answered
+ * from the cache within a few milliseconds, so it gets a short head start;
+ * after that, guessing beats waiting on a slow or unreachable Steam.
  */
-function useGuessing(art: ArtEntry) {
+function useGuessing(art: ArtEntry, wanted: boolean) {
   const [waited, setWaited] = useState(false);
   useEffect(() => {
-    if (art !== undefined) return;
+    if (!wanted || art !== undefined) return;
     const timer = setTimeout(() => setWaited(true), 350);
     return () => clearTimeout(timer);
-  }, [art]);
+  }, [art, wanted]);
   return art !== undefined || waited;
+}
+
+/**
+ * One of a game's pictures: the address to show, `null` when there is none,
+ * `undefined` while that isn't known. A picture on disk is shown at once.
+ * A missing one is fetched in its turn (see pictures.ts) for the tile `el`.
+ */
+function useGamePicture(kind: "cover" | "header" | "icon", appid: number, el: RefObject<Element | null>, enabled: boolean) {
+  const { src, missing } = usePictureStatus(kind, appid, enabled);
+  // The icon's address often came with the games list, and then nothing has to be looked up.
+  const known = kind === "icon" ? sources("icon", appid, undefined) : [];
+  const art = useArt(appid, missing && known.length === 0);
+  const guess = useGuessing(art, missing && known.length === 0);
+  const ready = known.length > 0 || art !== undefined || guess;
+  useFetchPicture(kind, appid, el, missing && ready ? sources(kind, appid, art) : [], {
+    enabled: missing,
+    ready,
+    // Only an answered lookup makes the addresses more than guesses.
+    certain: !!art,
+  });
+  return enabled ? src : undefined;
 }
 
 function Picture({
@@ -36,16 +58,14 @@ function Picture({
   src,
   className,
   style,
-  onFailed,
   backdrop,
 }: {
-  kind: ArtKind;
+  kind: "cover" | "header" | "icon";
   appid: number;
   src: string;
   className: string;
   style?: CSSProperties;
-  onFailed: () => void;
-  /** A second copy shown only for effect; it doesn't decide which URL is used. */
+  /** A second copy shown only for effect. */
   backdrop?: boolean;
 }) {
   return (
@@ -53,19 +73,9 @@ function Picture({
       src={src}
       alt=""
       aria-hidden={backdrop || undefined}
-      loading="lazy"
       decoding="async"
       draggable={false}
-      referrerPolicy="no-referrer"
-      onLoad={backdrop ? undefined : () => markLoaded(kind, appid, src)}
-      onError={
-        backdrop
-          ? undefined
-          : () => {
-              markFailed(src);
-              onFailed();
-            }
-      }
+      onError={backdrop ? undefined : () => pictureBroken(kind, appid)}
       className={className}
       style={style}
     />
@@ -74,8 +84,8 @@ function Picture({
 
 /**
  * A game's picture from Steam: the wide banner, or the portrait cover used in
- * the Steam library. Falls back through every known source, and finally to a
- * tile with the game's name so it can still be recognized.
+ * the Steam library. Until the picture is there, and when there is none, the
+ * tile shows the game's name so it can still be recognized.
  */
 export function GameArt({
   appid,
@@ -88,40 +98,33 @@ export function GameArt({
   shape?: "banner" | "cover";
   className?: string;
 }) {
-  const art = useArt(appid);
-  const guess = useGuessing(art);
-  const [, tryNext] = useReducer((n: number) => n + 1, 0);
-
-  const cover = shape === "cover" ? pick("cover", appid, art, guess) : undefined;
-  const header =
-    shape === "banner"
-      ? pick("header", appid, art, guess)
-      : // In a cover slot the banner is a stand-in, used only once the lookup has had its say.
-        !cover && art !== undefined
-        ? pick("header", appid, art)
-        : undefined;
-  const nothing = !cover && !header && art !== undefined;
+  const box = useRef<HTMLDivElement>(null);
+  const cover = useGamePicture("cover", appid, box, shape === "cover");
+  // In a cover slot the banner is a stand-in, used only once it is known that there is no cover.
+  const header = useGamePicture("header", appid, box, shape === "banner" || cover === null);
+  const showCover = shape === "cover" && !!cover;
+  const showHeader = !showCover && !!header;
+  const named = !showCover && !showHeader;
 
   return (
     <div
+      ref={box}
       className={cx(
         "@container relative w-full overflow-hidden bg-well",
         shape === "cover" ? "aspect-[2/3]" : "aspect-[460/215]",
         className,
       )}
       style={
-        nothing
+        named
           ? { background: `linear-gradient(160deg, oklch(0.36 0.06 ${hue(appid)}), oklch(0.22 0.04 ${hue(appid) + 40}))` }
           : undefined
       }
     >
-      {cover && (
-        <Picture key={cover} kind="cover" appid={appid} src={cover} onFailed={tryNext} className="absolute inset-0 size-full object-cover" />
+      {showCover && <Picture key={cover} kind="cover" appid={appid} src={cover} className="absolute inset-0 size-full object-cover" />}
+      {showHeader && shape === "banner" && (
+        <Picture key={header} kind="header" appid={appid} src={header} className="absolute inset-0 size-full object-cover" />
       )}
-      {!cover && header && shape === "banner" && (
-        <Picture key={header} kind="header" appid={appid} src={header} onFailed={tryNext} className="absolute inset-0 size-full object-cover" />
-      )}
-      {!cover && header && shape === "cover" && (
+      {showHeader && shape === "cover" && (
         // No portrait exists: show the whole banner over a blurred copy of itself, as the Steam library does.
         <>
           <Picture
@@ -130,13 +133,12 @@ export function GameArt({
             kind="header"
             appid={appid}
             src={header}
-            onFailed={tryNext}
             className="absolute inset-0 size-full scale-150 object-cover opacity-70 blur-xl"
           />
-          <Picture key={header} kind="header" appid={appid} src={header} onFailed={tryNext} className="absolute inset-0 size-full object-contain" />
+          <Picture key={header} kind="header" appid={appid} src={header} className="absolute inset-0 size-full object-contain" />
         </>
       )}
-      {nothing && (
+      {named && (
         <div className="absolute inset-0 flex items-end p-[5.5cqw]">
           <span
             className={cx(
@@ -167,39 +169,30 @@ function initials(name: string) {
 
 /** The small square icon Steam shows beside a game's name. */
 export function GameIcon({ appid, name, size = 32 }: { appid: number; name: string; size?: number }) {
-  const art = useArt(appid);
-  const [, tryNext] = useReducer((n: number) => n + 1, 0);
-
-  const icon = pick("icon", appid, art);
-  // Some games have no icon on record. Once the lookup has answered, a square
-  // crop of the cover still identifies the game better than letters do.
-  const crop = !icon && art !== undefined ? pick("cover", appid, art) : undefined;
+  const box = useRef<HTMLSpanElement>(null);
+  const icon = useGamePicture("icon", appid, box, true);
+  // Some games have no icon on record. A square crop of the cover still
+  // identifies the game better than letters do.
+  const crop = useGamePicture("cover", appid, box, icon === null);
   const src = icon ?? crop;
-  const box = { width: size, height: size };
+  const waiting = icon === undefined || (icon === null && crop === undefined);
+  const dims = { width: size, height: size };
 
-  if (src) {
-    return (
-      <Picture
-        key={src}
-        kind={icon ? "icon" : "cover"}
-        appid={appid}
-        src={src}
-        onFailed={tryNext}
-        className="flex-none rounded-md bg-well object-cover"
-        style={box}
-      />
-    );
-  }
-  if (art === undefined) {
-    return <span className="flex-none rounded-md bg-well" style={box} aria-hidden="true" />;
-  }
   return (
     <span
-      className="inline-flex flex-none items-center justify-center rounded-md text-[11px] font-semibold text-white/85"
-      style={{ ...box, background: `oklch(0.38 0.07 ${hue(appid)})` }}
+      ref={box}
       aria-hidden="true"
+      className={cx(
+        "inline-flex flex-none items-center justify-center overflow-hidden rounded-md text-[11px] font-semibold text-white/85",
+        (src || waiting) && "bg-well",
+      )}
+      style={src || waiting ? dims : { ...dims, background: `oklch(0.38 0.07 ${hue(appid)})` }}
     >
-      {initials(name) || "?"}
+      {src ? (
+        <Picture key={src} kind={icon ? "icon" : "cover"} appid={appid} src={src} className="size-full object-cover" />
+      ) : waiting ? null : (
+        initials(name) || "?"
+      )}
     </span>
   );
 }

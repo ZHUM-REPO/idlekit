@@ -148,6 +148,7 @@ export function createMock() {
   // hosts, for working on the UI offline. Without it the lookup "fails", as it
   // would with Steam unreachable, and the UI falls back to guessable URLs.
   const artBase = params.get("art")?.replace(/\/$/, "");
+  const fetched = new Map<string, string>();
 
   // Desktop behaviour, for previewing its screens:
   //   ?update=available | downloading | error | off     what the updater reports
@@ -157,11 +158,11 @@ export function createMock() {
   const updateDemo = params.get("update");
   const update: UpdateState = {
     configured: updateDemo !== "off",
-    current: "0.5",
+    current: "0.6",
     phase: updateDemo === "downloading" ? "downloading" : "idle",
     available:
       updateDemo && updateDemo !== "off"
-        ? { version: "0.6", notes: "A sample release, for previewing how updates look." }
+        ? { version: "0.7", notes: "A sample release, for previewing how updates look." }
         : null,
     checkedAt: now - 4 * 60_000,
     error: updateDemo === "error" ? "Couldn't install the update: the connection was lost" : null,
@@ -280,7 +281,7 @@ export function createMock() {
   };
 
   const logs: LogLine[] = [
-    { ts: now - 3 * 3600_000, level: "info", scope: "app", message: "IdleKit 0.5 started" },
+    { ts: now - 3 * 3600_000, level: "info", scope: "app", message: "IdleKit 0.6 started" },
     { ts: now - 3 * 3600_000 + 2000, level: "info", scope: "direct", message: `${ALT} connected to Steam` },
     { ts: now - 3 * 3600_000 + 5000, level: "info", scope: "idle", message: "2 game(s) idling (auto)" },
     { ts: now - 2 * 3600_000, level: "info", scope: "farming", message: "Phase 1: building playtime on 3 game(s) under 2h" },
@@ -352,7 +353,7 @@ export function createMock() {
 
   const handlers: Record<string, (a: Record<string, any>) => unknown | Promise<unknown>> = {
     get_bootstrap: (): Bootstrap => ({
-      version: "0.5",
+      version: "0.6",
       dataDir: "C:\\Users\\you\\AppData\\Roaming\\dev.idlekit.app",
       settings,
       accounts: accounts.map(view),
@@ -477,6 +478,31 @@ export function createMock() {
     },
     remove_manual_game: ({ steamId, appid }) => {
       games[steamId] = (games[steamId] ?? []).filter((g) => !(g.manual && g.appid === appid));
+    },
+    // The preview has no pictures folder. A "file" here is the picture's own
+    // address, handed over once the browser has loaded it, so the queue in
+    // pictures.ts behaves as in the app: a few fetches at a time, each kept.
+    pictures_cached: ({ items }) =>
+      Object.fromEntries(
+        (items as { kind: string; id: string }[])
+          .map((i) => [`${i.kind}:${i.id}`, fetched.get(`${i.kind}:${i.id}`)] as const)
+          .filter(([, file]) => file)
+          .map(([key, file]) => [key, { file, stale: false, none: false }]),
+      ),
+    picture_fetch: async ({ kind, id, urls }) => {
+      for (const url of urls as string[]) {
+        const ok = await new Promise<boolean>((resolve) => {
+          const img = new Image();
+          img.onload = () => resolve(true);
+          img.onerror = () => resolve(false);
+          img.src = url;
+        });
+        if (ok) {
+          fetched.set(`${kind}:${id}`, url);
+          return url;
+        }
+      }
+      return null;
     },
     resolve_game_art: async ({ appids }) => {
       if (!artBase) return {};

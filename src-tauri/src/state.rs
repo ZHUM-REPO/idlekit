@@ -4,7 +4,7 @@ use crate::config::{Account, Config};
 use crate::features::{farming::FarmingManager, idler::Idler, unlocker::UnlockerManager};
 use crate::steam::community::WebSession;
 use crate::steam::webapi::{self, OwnedGame};
-use crate::steam::{art::ArtResolver, auth::AuthSessions, cm::CmManager, helper::HelperManager, jwt, local};
+use crate::steam::{art::ArtResolver, auth::AuthSessions, cm::CmManager, helper::HelperManager, jwt, local, pictures::Pictures};
 use crate::{logbus, secrets};
 use anyhow::{anyhow, bail, Result};
 use serde::Serialize;
@@ -48,6 +48,8 @@ pub struct Inner {
     pub unlocker: UnlockerManager,
     /// Icon, banner and cover lookups, cached on disk.
     pub art: ArtResolver,
+    /// Covers, banners, icons and avatars kept on disk, fetched a few at a time.
+    pub pictures: Pictures,
     /// What is known about newer versions of IdleKit.
     pub updates: crate::updates::Updates,
     web: tokio::sync::Mutex<HashMap<String, Arc<WebSession>>>,
@@ -64,12 +66,13 @@ fn hide_account_names(cfg: &Config) {
 }
 
 impl App {
-    pub fn new(data_dir: PathBuf) -> Self {
+    pub fn new(data_dir: PathBuf, pictures_dir: PathBuf) -> Self {
         let config = Config::load(&data_dir);
         let art = ArtResolver::new(&data_dir);
         Self(Arc::new(Inner {
             data_dir,
             art,
+            pictures: Pictures::new(pictures_dir),
             updates: Default::default(),
             config: Mutex::new(config),
             http: webapi::http_client(),
@@ -364,6 +367,15 @@ impl App {
             .unwrap_or_default();
         let entries = Self::to_entries(owned, &account);
         self.games.lock().unwrap().insert(steam_id.to_string(), entries);
+    }
+
+    /// Steam keeps the avatar of each account that has signed in on this PC.
+    /// Taking it from there shows a profile picture with no network at all.
+    pub fn adopt_local_avatar(&self, steam_id: &str) {
+        if let Ok(steam) = self.steam_path() {
+            let source = steam.join("config").join("avatarcache").join(format!("{steam_id}.png"));
+            self.pictures.adopt_local("avatar", steam_id, &source);
+        }
     }
 
     /// Persona name + avatar from the public profile XML (best effort).

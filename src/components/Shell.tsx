@@ -13,6 +13,7 @@ import {
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { inTauri } from "../lib/api";
 import { useNow } from "../lib/hooks";
+import { pictureBroken, usePicture } from "../lib/pictures";
 import { until } from "../lib/format";
 import { useActiveAccount, useApp, type Page } from "../lib/store";
 import type { Account } from "../lib/types";
@@ -91,28 +92,26 @@ export function Sidebar() {
 }
 
 function Avatar({ account, size = 30 }: { account: Account; size?: number }) {
-  const [failed, setFailed] = useState(false);
+  const box = useRef<HTMLSpanElement>(null);
   const name = account.personaName || account.accountName || "?";
-  if (account.avatarUrl && !failed) {
-    return (
-      <img
-        src={account.avatarUrl}
-        alt=""
-        width={size}
-        height={size}
-        onError={() => setFailed(true)}
-        className="flex-none rounded-md bg-well"
-        style={{ width: size, height: size }}
-      />
-    );
-  }
+  // From disk when it is there: Steam's own copy on this PC, or one fetched
+  // earlier. Otherwise fetched once from the profile's avatar address.
+  const src = usePicture("avatar", account.steamId, box, account.avatarUrl ? [account.avatarUrl] : [], account.avatarUrl || undefined);
   return (
     <span
+      ref={box}
       aria-hidden="true"
-      className="inline-flex flex-none items-center justify-center rounded-md bg-raised text-[13px] font-semibold text-muted border border-line"
+      className={cx(
+        "inline-flex flex-none items-center justify-center overflow-hidden rounded-md text-[13px] font-semibold text-muted",
+        src ? "bg-well" : "border border-line bg-raised",
+      )}
       style={{ width: size, height: size }}
     >
-      {name.slice(0, 1).toUpperCase()}
+      {src ? (
+        <img src={src} alt="" className="size-full object-cover" onError={() => pictureBroken("avatar", account.steamId)} />
+      ) : (
+        name.slice(0, 1).toUpperCase()
+      )}
     </span>
   );
 }

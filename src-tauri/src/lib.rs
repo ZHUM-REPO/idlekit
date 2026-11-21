@@ -91,6 +91,15 @@ async fn startup(app: App, handle: AppHandle) {
     for a in cfg.accounts.iter() {
         app.cm.configure(&a.steam_id, &a.account_name, a.persona_state, &s.idle_status_text);
     }
+    // An account whose profile couldn't be read when it was added (no avatar
+    // yet) gets another try at each start, once the first rush is over.
+    for a in cfg.accounts.iter().filter(|a| a.avatar_url.is_empty()) {
+        let (app, steam_id) = (app.clone(), a.steam_id.clone());
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_secs(12)).await;
+            app.fetch_profile(&steam_id).await;
+        });
+    }
     if s.connect_direct_on_launch {
         for a in cfg.accounts.iter().filter(|a| a.mode == "direct") {
             if secrets::get(&secrets::refresh_token_key(&a.steam_id)).is_none() {
@@ -139,6 +148,25 @@ async fn tray_ticker(app: App, handle: AppHandle) {
     }
 }
 
+/// One file from the pictures folder, and only a file the app itself wrote there.
+fn serve_picture(handle: &AppHandle, path: &str) -> tauri::http::Response<Vec<u8>> {
+    use steam::pictures;
+    let file = path.trim_start_matches('/');
+    let bytes = pictures::parse_name(file)
+        .and_then(|_| handle.path().app_cache_dir().ok())
+        .and_then(|dir| std::fs::read(dir.join(pictures::FOLDER).join(file)).ok());
+    let reply = tauri::http::Response::builder().header("Access-Control-Allow-Origin", "*");
+    match bytes {
+        Some(bytes) => reply
+            .header("Content-Type", pictures::content_type(file))
+            // A changed picture gets a new file name, so a file never changes.
+            .header("Cache-Control", "public, max-age=31536000, immutable")
+            .body(bytes),
+        None => reply.status(404).body(Vec::new()),
+    }
+    .unwrap_or_default()
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     logbus::log_panics();
@@ -152,12 +180,18 @@ pub fn run() {
         .plugin(tauri_plugin_autostart::Builder::new().arg(desktop::AUTOSTART_ARG).build())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .on_window_event(desktop::on_window_event)
+        // Pictures kept on disk reach the window through this address:
+        // pic://localhost/<file> (http://pic.localhost/<file> on Windows).
+        .register_uri_scheme_protocol("pic", |ctx, request| serve_picture(ctx.app_handle(), request.uri().path()))
         .setup(|app| {
             logbus::init(app.handle().clone());
             let data_dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&data_dir)?;
             secrets::init(data_dir.clone());
-            let state = App::new(data_dir.clone());
+            // Pictures are bulky and can always be fetched again, so they go
+            // in the cache folder (%LOCALAPPDATA% on Windows), not with the settings.
+            let pictures_dir = app.path().app_cache_dir()?.join(steam::pictures::FOLDER);
+            let state = App::new(data_dir.clone(), pictures_dir);
             // Names first, so nothing written to the file can carry one.
             state.hide_names();
             let home = app.path().home_dir().ok();
@@ -252,6 +286,8 @@ pub fn run() {
             commands::update_check,
             commands::update_install,
             commands::log_event,
+            commands::pictures_cached,
+            commands::picture_fetch,
             commands::open_log_file,
         ])
         .build(tauri::generate_context!())

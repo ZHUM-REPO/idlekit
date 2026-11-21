@@ -2,6 +2,14 @@
 
 The section for the version being released becomes the text of its release page.
 
+## 0.6
+
+- **Pictures no longer take over the connection.** Opening the Library used to start a download for every cover near the screen at once, dozens at a time, which could slow the whole network on a slow line. Now at most three pictures are fetched at a time: the tiles on screen first, then the ones just below, and nothing for tiles far away until you scroll near them.
+- **Each picture is fetched once.** Covers, banners, icons and avatars are kept on disk (`%LOCALAPPDATA%\dev.idlekit.app\pictures`) and shown from there afterwards, without touching the internet. A picture Steam turns out not to have is remembered too, for three days, and not asked for again at every start.
+- **Your profile picture shows up.** It is taken from Steam's own copy on this PC when there is one, so it needs no network at all. An account whose profile couldn't be read when it was added, which left it without a picture for good, is now tried again at each start.
+- While a picture is on its way, the tile shows the game's name instead of staying blank.
+- The log gets one line per run of fetching ("Fetched 24 pictures from Steam, …"), not a line per picture.
+
 ## 0.5
 
 Releases are now numbered 0.5, 0.6 and so on, one step per release; after 0.9 comes 1.0. This one follows 0.2.2.

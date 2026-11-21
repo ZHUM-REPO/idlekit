@@ -32,6 +32,9 @@ export const ACTIONS: Record<string, Action> = {
   get_logs: { label: "Read the log", quiet: true },
   farm_status: { label: "Read farming status", quiet: true },
   resolve_game_art: { label: "Look up game pictures", detail: (a) => `${count(a.appids)} game(s)`, quiet: true },
+  // Pictures are counted by the backend: one line per run, not two per picture.
+  pictures_cached: { label: "Check pictures on disk", detail: (a) => `${count(a.items)} picture(s)`, quiet: true },
+  picture_fetch: { label: "Fetch a picture", detail: (a) => String(a.kind), quiet: true },
   // Settings changes are written down by the backend, value by value.
   save_settings: { label: "Save settings", quiet: true },
 
