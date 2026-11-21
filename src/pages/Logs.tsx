@@ -6,6 +6,8 @@ import { useApp } from "../lib/store";
 
 export function LogsPage() {
   const logs = useApp((s) => s.logs);
+  const logFile = useApp((s) => s.logFile);
+  const run = useApp((s) => s.run);
   const [level, setLevel] = useState<"all" | "problems" | "debug">("all");
   const [query, setQuery] = useState("");
   const end = useRef<HTMLDivElement>(null);
@@ -27,7 +29,7 @@ export function LogsPage() {
     <div className="flex h-full flex-col pb-4">
       <PageHeader
         title="Logs"
-        sub="What IdleKit has been doing this session. Include these when reporting a problem."
+        sub="Every action and its result, and anything that went wrong. Sign-in names, Steam IDs, tokens and cookies are left out, so this is safe to share when reporting a problem."
         actions={
           <>
             <TextInput value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Filter" aria-label="Filter logs" className="w-56" />
@@ -46,6 +48,7 @@ export function LogsPage() {
             >
               Copy
             </Button>
+            {logFile && <Button onClick={() => void run(null, () => api.openLogFile())}>Show log.txt</Button>}
             <Button
               variant="ghost"
               onClick={async () => {
@@ -78,6 +81,11 @@ export function LogsPage() {
         ))}
         <div ref={end} />
       </div>
+      <p className="mt-2 text-[12px] text-faint">
+        {logFile
+          ? `This list is this session. The same lines, from earlier sessions too, are kept in ${logFile}.`
+          : "This list is this session only: the log file couldn't be opened."}
+      </p>
     </div>
   );
 }

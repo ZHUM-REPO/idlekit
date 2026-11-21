@@ -332,6 +332,8 @@ export interface Bootstrap {
   farming: FarmStatus[];
   unlocker: UnlockStatus[];
   logs: LogLine[];
+  /** Where log.txt is, or null when it couldn't be opened. */
+  logFile: string | null;
   desktop: DesktopInfo;
   update: UpdateState;
 }

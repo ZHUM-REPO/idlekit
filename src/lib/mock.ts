@@ -372,6 +372,7 @@ export function createMock() {
       farming: Object.values(farm),
       unlocker: Object.values(unlock),
       logs,
+      logFile: "C:\\Users\\you\\AppData\\Roaming\\dev.idlekit.app\\log.txt",
       desktop: {
         platform: (params.get("platform") as Bootstrap["desktop"]["platform"]) ?? "windows",
         tray: params.get("tray") !== "0",
@@ -386,6 +387,12 @@ export function createMock() {
     },
     detect_local_steam: () => handlers.get_bootstrap({}) && (handlers.get_bootstrap({}) as Bootstrap).localSteam,
     get_logs: () => logs,
+    log_event: ({ level, scope, message }) => {
+      const line = { ts: Date.now(), level, scope, message };
+      logs.push(line);
+      emit("log://line", line);
+    },
+    open_log_file: () => undefined,
     clear_logs: () => {
       logs.length = 0;
     },

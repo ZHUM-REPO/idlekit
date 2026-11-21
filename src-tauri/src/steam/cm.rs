@@ -239,7 +239,7 @@ impl CmManager {
         *s.conn.lock().await = Some(conn);
         s.state.lock().unwrap().blocked = false;
         s.set_status("online", "");
-        logbus::info("direct", format!("{} connected to Steam", s.steam_id));
+        logbus::info("direct", format!("{} connected to Steam", logbus::label(&s.steam_id)));
         if let Err(e) = s.push_persona().await {
             logbus::warn("direct", e.to_string());
         }
@@ -261,7 +261,7 @@ impl CmManager {
                             Ok(m) => format!("Steam logged this session off ({})", eresult_name(m.eresult())),
                             Err(_) => "Connection to Steam lost".to_string(),
                         };
-                        logbus::warn("direct", format!("{}: {reason}", s.steam_id));
+                        logbus::warn("direct", format!("{}: {reason}", logbus::label(&s.steam_id)));
                         if s.wanted.load(Ordering::SeqCst) {
                             s.set_status("reconnecting", reason);
                             me.schedule_reconnect(s.clone(), gen, 0);
@@ -312,7 +312,7 @@ impl CmManager {
                     s.set_status("error", format!("Steam rejected the saved sign-in ({e}). Sign in again."));
                 }
                 Err(e) => {
-                    logbus::warn("direct", format!("{}: reconnect failed: {e}", s.steam_id));
+                    logbus::warn("direct", format!("{}: reconnect failed: {e}", logbus::label(&s.steam_id)));
                     me.schedule_reconnect(s, gen, attempt + 1);
                 }
             }

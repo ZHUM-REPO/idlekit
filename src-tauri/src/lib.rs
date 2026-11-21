@@ -53,7 +53,7 @@ async fn wait_until_usable(app: &App, account: &Account, wait: Duration, poll: D
     if can_idle(app, account) {
         return true;
     }
-    logbus::info("app", format!("{}: waiting for {waiting_for}", account.account_name));
+    logbus::info("app", format!("{}: waiting for {waiting_for}", logbus::label(&account.steam_id)));
     let deadline = Instant::now() + wait;
     while Instant::now() < deadline {
         tokio::time::sleep(poll).await;
@@ -97,7 +97,7 @@ async fn startup(app: App, handle: AppHandle) {
                 continue;
             }
             if let Err(e) = app.cm.connect(&a.steam_id).await {
-                logbus::warn("direct", format!("{}: {e:#}", a.account_name));
+                logbus::warn("direct", format!("{}: {e:#}", logbus::label(&a.steam_id)));
             }
         }
     }
@@ -108,7 +108,7 @@ async fn startup(app: App, handle: AppHandle) {
             let _ = app.load_games(&a.steam_id, false).await;
             let games = a.auto_idle.iter().map(|id| (*id, app.game_name(&a.steam_id, *id))).collect();
             if let Err(e) = app.idler.start(&app, &a.steam_id, games, "auto", None).await {
-                logbus::warn("idle", format!("Auto-idle for {} failed: {e:#}", a.account_name));
+                logbus::warn("idle", format!("Auto-idle for {} failed: {e:#}", logbus::label(&a.steam_id)));
             }
         }
     }
@@ -141,6 +141,7 @@ async fn tray_ticker(app: App, handle: AppHandle) {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    logbus::log_panics();
     // reqwest and the websocket client both use rustls; pick one provider explicitly.
     let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
 
@@ -156,7 +157,20 @@ pub fn run() {
             let data_dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&data_dir)?;
             secrets::init(data_dir.clone());
-            let state = App::new(data_dir);
+            let state = App::new(data_dir.clone());
+            // Names first, so nothing written to the file can carry one.
+            state.hide_names();
+            logbus::open_file(
+                &data_dir,
+                &format!(
+                    "IdleKit {} started on {} {}, web view {}, launched at sign-in: {}",
+                    env!("CARGO_PKG_VERSION"),
+                    std::env::consts::OS,
+                    std::env::consts::ARCH,
+                    tauri::webview_version().unwrap_or_else(|_| "unknown".into()),
+                    if std::env::args().any(|arg| arg == desktop::AUTOSTART_ARG) { "yes" } else { "no" },
+                ),
+            );
             if let Ok(res) = app.path().resource_dir() {
                 state.helpers.add_lib_dir(res.join("resources"));
                 state.helpers.add_lib_dir(res);
@@ -232,11 +246,14 @@ pub fn run() {
             commands::window_close_choice,
             commands::update_check,
             commands::update_install,
+            commands::log_event,
+            commands::open_log_file,
         ])
         .build(tauri::generate_context!())
         .expect("error while building IdleKit")
         .run(|handle, event| {
             if let tauri::RunEvent::Exit = event {
+                logbus::info("app", "IdleKit is closing");
                 let app = handle.state::<App>().inner().clone();
                 tauri::async_runtime::block_on(async move {
                     app.farming.stop_everything();

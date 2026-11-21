@@ -1,6 +1,6 @@
 import { useEffect } from "react";
 import { create } from "zustand";
-import { api, errorText, on } from "./api";
+import { api, errorText, logLine, on } from "./api";
 import { rememberIcons } from "./art";
 import type {
   Account,
@@ -32,6 +32,8 @@ interface State {
   fatal: string | null;
   version: string;
   dataDir: string;
+  /** Where log.txt is, or null when there is none. */
+  logFile: string | null;
   helperFound: boolean;
   settings: Settings | null;
   accounts: Account[];
@@ -91,6 +93,7 @@ export const useApp = create<State>((set, get) => ({
   fatal: null,
   version: "",
   dataDir: "",
+  logFile: null,
   helperFound: true,
   settings: null,
   accounts: [],
@@ -126,6 +129,7 @@ export const useApp = create<State>((set, get) => ({
         ready: true,
         version: b.version,
         dataDir: b.dataDir,
+        logFile: b.logFile,
         helperFound: b.helperFound,
         settings: b.settings,
         accounts: b.accounts,
@@ -161,6 +165,7 @@ export const useApp = create<State>((set, get) => ({
   },
 
   go(page, opts) {
+    if (page !== get().page) logLine("info", "action", `Open the ${page} page`);
     set({ page, ...(opts?.achAppid !== undefined ? { achAppid: opts.achAppid } : {}) });
   },
 

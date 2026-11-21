@@ -116,12 +116,14 @@ pub fn on_window_event(window: &Window, event: &WindowEvent) {
     match close_outcome(&action, tray_ready(), CLOSE_PROMPT_OPEN.load(Ordering::SeqCst)) {
         CloseOutcome::Hide => {
             api.prevent_close();
+            logbus::info("window", "Close button: kept running in the tray");
             hide_main(handle);
         }
         // Letting the last window close ends the app, which stops everything cleanly.
-        CloseOutcome::Quit => {}
+        CloseOutcome::Quit => logbus::info("window", "Close button: quitting"),
         CloseOutcome::Ask => {
             api.prevent_close();
+            logbus::info("window", "Close button: asking whether to keep running");
             CLOSE_PROMPT_OPEN.store(true, Ordering::SeqCst);
             let _ = handle.emit("window://close-requested", ());
         }
@@ -161,8 +163,12 @@ fn build_tray(handle: &AppHandle) -> tauri::Result<()> {
         // Left click opens the window; the menu is on right click.
         .show_menu_on_left_click(false)
         .on_menu_event(|handle, event| match event.id().as_ref() {
-            "open" => show_main(handle),
+            "open" => {
+                logbus::info("tray", "Menu: Open IdleKit");
+                show_main(handle);
+            }
             "update" => {
+                logbus::info("tray", "Menu: Check for updates");
                 show_main(handle);
                 let _ = handle.emit("app://navigate", "settings");
                 let handle = handle.clone();
@@ -171,7 +177,10 @@ fn build_tray(handle: &AppHandle) -> tauri::Result<()> {
                     updates::check(&app, &handle).await;
                 });
             }
-            "quit" => handle.exit(0),
+            "quit" => {
+                logbus::info("tray", "Menu: Quit IdleKit");
+                handle.exit(0);
+            }
             _ => {}
         })
         .on_tray_icon_event(|tray, event| {
@@ -181,6 +190,7 @@ fn build_tray(handle: &AppHandle) -> tauri::Result<()> {
                 ..
             } = event
             {
+                logbus::info("tray", "Icon clicked: opening the window");
                 show_main(tray.app_handle());
             }
         });

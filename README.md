@@ -105,7 +105,8 @@ About fifteen minutes later the release has the installer, its signature and `la
 ```
 src/                     React UI (Vite, Tailwind 4, zustand)
   styles.css             themes, Inter (via @fontsource-variable/inter, OFL), odometer
-  lib/api.ts             typed wrappers for every Tauri command
+  lib/api.ts             typed wrappers for every Tauri command; each call is logged
+  lib/actions.ts         what each command is called in the log, and which details are kept
   lib/mock.ts            sample-data backend for browser preview
   lib/art.ts             which image URLs to try for a game, and the batched art lookup
   components/Desktop.tsx the "update available" bar and the keep-running-or-quit question
@@ -115,6 +116,7 @@ src-tauri/src/
   state.rs               shared state, web sessions, games list sources
   desktop.rs             tray icon, what the close button does, starting at sign-in
   updates.rs             looking for, downloading and installing a newer release
+  logbus.rs              the log: scrubs each line, keeps it for the Logs page, writes log.txt
   features/              idler (shared by everything), farming, unlocker
   steam/                 cm (direct connection), auth (QR + password), community (badges,
                          licenses, profiles), market, helper (process manager), schema +
@@ -124,7 +126,7 @@ src-tauri/helper/        steam-helper: per-game Steamworks process (JSON lines o
 src-tauri/windows/       hooks.nsh: stops running helpers before the installer copies files
 scripts/                 prepare-helper.mjs (helper build); release-info, build-release and
                          release-files (used by the release workflow; logic in lib/release.mjs);
-                         install-check.ps1 (installs, starts and uninstalls a setup file);
+                         install-check.ps1 (installs, starts and uninstalls a setup file, reads its log);
                          fake-steam.mjs, a stand-in for Steam's store API and image hosts for
                          working on game art offline (usage in the file)
 .github/workflows/       release.yml: builds, checks and publishes the Windows installer;
@@ -135,15 +137,16 @@ scripts/                 prepare-helper.mjs (helper build); release-info, build-
 
 What has been tested, and how:
 
-- **Logic:** 41 backend unit tests (badge/licence/profile/inventory/listing parsers, binary KeyValues and achievement schemas, fee math for dollar and other wallets, pricing, farming phases, unlocker ordering, delays and time windows, the game-art lookup with its batching and cache, what the close button does, when to start in the tray, when a playtime boost ends) and 9 tests of the release scripts. The UI type-checks, and every UI call matches a registered command.
+- **Logic:** 46 backend unit tests (badge/licence/profile/inventory/listing parsers, binary KeyValues and achievement schemas, fee math for dollar and other wallets, pricing, farming phases, unlocker ordering, delays and time windows, the game-art lookup with its batching and cache, what the close button does, when to start in the tray, when a playtime boost ends, what the log scrubs and how its file starts over, which settings changed) and 9 tests of the release scripts. The UI type-checks, and every UI call matches a registered command.
 - **The app on Linux**, against a mock Steam install: adding a local account, loading its games, launching `steam-helper` for a game.
 - **Start on launch, on Linux** against a stand-in Steam client that only appears twelve seconds after IdleKit: auto-idle waits, then starts within seconds of Steam being there; with no Steam installed it says so at once.
 - **Tray and startup, on Linux:** the close question, hiding to the tray and coming back from a second launch, the tray menu (driven over D-Bus), the sign-in startup entry being written and removed, starting in the tray, and opening the window after an update.
 - **Updater, on Linux against a local update server:** finding a newer version at startup and from the tray menu, accepting a file signed with the release key, and refusing one that was altered after signing.
+- **The log, on Linux** with the window loaded against a stand-in Steam client, two runs in a row: `log.txt` gets a header per run, the wait for Steam, auto-idle starting and the window's actions, and holds neither the sign-in name, the Steam ID, the profile name nor the user name from folder paths.
 - **Game art**, against `scripts/fake-steam.mjs`: the lookup, the disk cache, covers in hashed folders, and each fallback.
-- **The Windows installer, on GitHub's Windows machine:** the app and the helper compile, and the installer is built and signed. Each setup file is checked before it is published (0.2.0 and 0.2.1 so far): it installs without asking anything; puts the app, the helper and Steam's library in place; creates Start menu and desktop shortcuts; the installed app opens its window with WebView2 running; opening it a second time hands over to the copy already running; and uninstalling removes all of it.
+- **The Windows installer, on GitHub's Windows machine:** the app and the helper compile, and the installer is built and signed. Each setup file is checked before it is published: it installs without asking anything; puts the app, the helper and Steam's library in place; creates Start menu and desktop shortcuts; the installed app opens its window with WebView2 running; opening it a second time hands over to the copy already running; from 0.2.2, the window's contents load and `log.txt` is written without the machine's user or computer name in it; and uninstalling removes all of it.
 
-What has not been tested: anything against live Steam servers or a running Steam client, and these Windows-only parts: Steam's registry keys, the Credential Manager, the tray icon and its menu, starting at sign-in, the check that Steam's process is still there, the market's fee numbers against a real wallet in another currency, and an installed copy updating itself to a newer release (0.2.0 to 0.2.1 is the first chance to see it). The first things to try on Windows, in this order:
+What has not been tested: anything against live Steam servers or a running Steam client, and these Windows-only parts: Steam's registry keys, the Credential Manager, the tray icon and its menu, starting at sign-in, the check that Steam's process is still there, the market's fee numbers against a real wallet in another currency, and an installed copy updating itself to a newer release. The first things to try on Windows, in this order:
 
 1. **Local mode:** add your account from "This PC's Steam". The library should fill with covers within a second or two, and lists should show each game's icon; if they don't, look on the Logs page for a warning from `art`. Then idle a game and check Steam shows you in-game.
 2. **Achievements:** open a game in the Manager; the list should load in a few seconds.
@@ -151,7 +154,21 @@ What has not been tested: anything against live Steam servers or a running Steam
 4. **Card farming → Check badges.**
 5. **Market → Load inventory → Get prices.** Only list items once prices look right.
 
-The Logs page (Copy button) has what's needed to debug anything that fails.
+If anything fails, `log.txt` has what's needed to debug it: see the next section.
+
+## The log
+
+IdleKit writes what it did and what went wrong to `log.txt` in `%APPDATA%\dev.idlekit.app` (on the Logs page, **Show log.txt** opens the folder). The Logs page shows the same lines for the current run; the file also keeps earlier runs, and survives a crash. At 2 MB it starts over and the previous file is kept as `log.old.txt`.
+
+What is written:
+
+- a header for each run: IdleKit's version, the system, the web view's version, and whether it was started at sign-in;
+- every action taken in the window, with how long it took or the error it ended with (`Start idling: 2 game(s) (440, 570): done in 31 ms`);
+- changed settings, one line per setting (`farming.checkMinutes: 10 → 15`); text you typed yourself is only noted as changed;
+- what the close button and the tray menu did, and what idling, card farming, the unlocker, the market and the updater did in the background;
+- faults nothing else caught, in the window or in the app itself, with where they happened.
+
+What is replaced before a line is stored, shown or written: sign-in names; Steam IDs, of which only the last four digits stay (`account …1234`); passwords, Steam Guard codes, cookies, tokens and QR sign-in links; e-mail and network addresses; custom profile addresses; your user name in folder paths; and any other long unreadable string. Profile names are not part of any log line. The log does name the games, achievements and market items an action was about, so read it through before posting it somewhere public. Nothing is sent anywhere: the file stays on your PC until you share it.
 
 ## Use responsibly
 

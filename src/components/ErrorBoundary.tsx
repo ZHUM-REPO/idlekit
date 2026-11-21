@@ -1,4 +1,5 @@
 import { Component, type ErrorInfo, type ReactNode } from "react";
+import { logLine } from "../lib/api";
 
 interface State {
   error: Error | null;
@@ -14,6 +15,7 @@ export class ErrorBoundary extends Component<{ children: ReactNode; resetKey?: s
 
   componentDidCatch(error: Error, info: ErrorInfo) {
     console.error("IdleKit UI error:", error, info.componentStack);
+    logLine("error", "ui", `A page stopped working: ${error.name}: ${error.message}\n${error.stack ?? ""}`);
   }
 
   componentDidUpdate(prev: { resetKey?: string }) {

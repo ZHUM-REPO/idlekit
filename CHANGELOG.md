@@ -2,6 +2,13 @@
 
 The section for the version being released becomes the text of its release page.
 
+## 0.2.2
+
+- **A log file.** IdleKit now writes what it did and what went wrong to `log.txt`, so there is something to look at after a problem even when the app was closed or crashed. The Logs page has a **Show log.txt** button that opens its folder (`%APPDATA%\dev.idlekit.app`). The file starts over at 2 MB, keeping the previous one as `log.old.txt`.
+- **Every action is written down:** each thing done in the window with how long it took, or the error it ended with; changed settings, value by value; what the close button and the tray menu did; each run's IdleKit version, system and web view version, and whether it was started at sign-in; and faults in the window or the app that nothing else caught.
+- **Nothing private goes into it.** Sign-in names, Steam IDs (only the last four digits are kept, as "account …1234"), passwords, Steam Guard codes, cookies, tokens, QR sign-in links, e-mail and network addresses, custom profile addresses and your Windows user name are replaced before a line is stored, shown or written. The log does say which games (by number and name), achievements and market items an action was about.
+- The check each setup file goes through before it is published now also makes sure the window's contents load, that the log file is written, and that it holds neither the user name nor the computer name.
+
 ## 0.2.1
 
 - **Start on launch waits for Steam.** Started at sign-in, IdleKit is usually up before the Steam client is. Auto-idle and card farming used to try once, fail and never start; they now wait up to five minutes for the Steam client (or, for direct accounts, the connection).

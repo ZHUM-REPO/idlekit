@@ -57,6 +57,12 @@ pub struct Inner {
     pub market_cancel: AtomicBool,
 }
 
+fn hide_account_names(cfg: &Config) {
+    for account in &cfg.accounts {
+        logbus::hide(&account.account_name, &logbus::label(&account.steam_id));
+    }
+}
+
 impl App {
     pub fn new(data_dir: PathBuf) -> Self {
         let config = Config::load(&data_dir);
@@ -90,10 +96,17 @@ impl App {
         self.config.lock().unwrap().settings.clone()
     }
 
+    /// Keeps every account's sign-in name out of the log: accounts are named
+    /// there by the end of their Steam ID.
+    pub fn hide_names(&self) {
+        hide_account_names(&self.config.lock().unwrap());
+    }
+
     /// Mutate the config and persist it.
     pub fn update_config<R>(&self, f: impl FnOnce(&mut Config) -> R) -> R {
         let mut cfg = self.config.lock().unwrap();
         let r = f(&mut cfg);
+        hide_account_names(&cfg);
         if let Err(e) = cfg.save(&self.data_dir) {
             logbus::error("config", format!("could not save settings: {e:#}"));
         }

@@ -63,6 +63,8 @@ pub struct Bootstrap {
     pub farming: Vec<FarmStatus>,
     pub unlocker: Vec<UnlockStatus>,
     pub logs: Vec<LogLine>,
+    /// Where log.txt is, when it could be opened.
+    pub log_file: Option<String>,
     pub desktop: DesktopInfo,
     pub update: UpdateState,
 }
@@ -97,6 +99,7 @@ pub async fn get_bootstrap(app: State<'_, App>, handle: AppHandle) -> CmdResult<
         farming: app.farming.all(),
         unlocker: app.unlocker.all(),
         logs: logbus::recent(),
+        log_file: logbus::file_path().map(|p| p.display().to_string()),
         desktop: desktop::info(&handle),
         update: updates::snapshot(&app, &handle),
     })
@@ -111,7 +114,11 @@ pub async fn get_accounts(app: State<'_, App>) -> CmdResult<Vec<AccountView>> {
 #[tauri::command]
 pub async fn save_settings(app: State<'_, App>, settings: Settings) -> CmdResult<()> {
     let text = settings.idle_status_text.clone();
-    let changed = app.settings().idle_status_text != text;
+    let before = app.settings();
+    let changed = before.idle_status_text != text;
+    for change in crate::config::setting_changes(&before, &settings) {
+        logbus::info("settings", change);
+    }
     app.update_config(|c| c.settings = settings);
     if !changed {
         return Ok(());
@@ -146,6 +153,22 @@ pub async fn get_logs() -> CmdResult<Vec<LogLine>> {
 pub async fn clear_logs() -> CmdResult<()> {
     logbus::clear();
     Ok(())
+}
+
+/// A line from the window for the log: an action and how it ended, or a
+/// fault in the interface. It is scrubbed like every other line.
+#[tauri::command]
+pub async fn log_event(level: String, scope: String, message: String) -> CmdResult<()> {
+    logbus::from_window(&level, &scope, message);
+    Ok(())
+}
+
+/// Opens the folder that holds log.txt, with the file selected.
+#[tauri::command]
+pub async fn open_log_file(handle: AppHandle) -> CmdResult<()> {
+    use tauri_plugin_opener::OpenerExt;
+    let path = logbus::file_path().ok_or("There is no log file: it couldn't be created")?;
+    handle.opener().reveal_item_in_dir(&path).map_err(|e| format!("Couldn't open the folder: {e}"))
 }
 
 // ------------------------------------------------------------- accounts --
@@ -216,7 +239,7 @@ fn on_signed_in(app: App, mode: String) -> impl FnOnce(SignedIn) -> futures_util
                         let sid = done.steam_id.clone();
                         tokio::spawn(async move {
                             if let Err(e) = cm.connect(&sid).await {
-                                logbus::warn("direct", format!("{sid}: {e:#}"));
+                                logbus::warn("direct", format!("{}: {e:#}", logbus::label(&sid)));
                             }
                         });
                     }
@@ -228,7 +251,7 @@ fn on_signed_in(app: App, mode: String) -> impl FnOnce(SignedIn) -> futures_util
                     .send(steam_vent_proto_steam::steammessages_clientserver_login::CMsgClientLogOff::new())
                     .await;
             }
-            logbus::info("accounts", format!("Signed in as {} ({})", account.account_name, done.steam_id));
+            logbus::info("accounts", format!("Signed in: {}", logbus::label(&done.steam_id)));
             app.emit_accounts();
             let a = app.clone();
             let sid = done.steam_id.clone();
@@ -256,6 +279,8 @@ pub async fn auth_start_credentials(
     if username.trim().is_empty() || password.is_empty() {
         return Err("Enter your Steam username and password".into());
     }
+    // Before anything can fail and quote it back.
+    logbus::hide(&username, "the sign-in name");
     let id = new_id();
     let a = app.inner().clone();
     a.auth
@@ -287,7 +312,7 @@ pub async fn set_web_cookie(app: State<'_, App>, steam_id: String, cookie: Strin
     let (_, value, _) = community::parse_login_secure(&cookie).map_err(anyhow_err)?;
     secrets::set(&secrets::cookie_key(&steam_id), &value).map_err(anyhow_err)?;
     app.forget_web_session(&steam_id).await;
-    logbus::info("accounts", format!("Web session cookie saved for {steam_id}"));
+    logbus::info("accounts", format!("Web session cookie saved for {}", logbus::label(&steam_id)));
     app.emit_accounts();
     Ok(())
 }

@@ -255,6 +255,7 @@ impl Idler {
             self.emit(steam_id);
             return Ok(());
         }
+        logbus::info("idle", format!("{} game(s) stopped ({})", removed.len(), source.unwrap_or("all")));
         let mode = app.account(steam_id).map(|a| a.mode).unwrap_or_default();
         if mode == "direct" {
             app.cm.set_games(steam_id, self.appids(steam_id)).await?;

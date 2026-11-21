@@ -2,6 +2,7 @@
 // every call is served by the in-memory mock backend instead.
 import { invoke as tauriInvoke } from "@tauri-apps/api/core";
 import { listen as tauriListen, type UnlistenFn } from "@tauri-apps/api/event";
+import { endLine, startLine } from "./actions";
 import type {
   AchView,
   Account,
@@ -39,9 +40,31 @@ function mock(): Promise<Mock> {
   return mockPromise;
 }
 
-async function call<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
+async function send<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
   if (inTauri) return tauriInvoke<T>(cmd, args);
   return (await mock()).invoke(cmd, args) as Promise<T>;
+}
+
+/** Writes a line to the app's log (and log.txt). Never throws: logging must not break anything. */
+export function logLine(level: "debug" | "info" | "warn" | "error", scope: "action" | "ui", message: string): void {
+  void send<void>("log_event", { level, scope, message }).catch(() => undefined);
+}
+
+/** Runs a command and writes down what it was and how it ended. */
+async function call<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
+  const began = performance.now();
+  const start = startLine(cmd, args);
+  if (start) logLine(start.level, "action", start.message);
+  try {
+    const result = await send<T>(cmd, args);
+    const end = endLine(cmd, args, true, performance.now() - began);
+    if (end) logLine(end.level, "action", end.message);
+    return result;
+  } catch (e) {
+    const end = endLine(cmd, args, false, performance.now() - began, errorText(e));
+    if (end) logLine(end.level, "action", end.message);
+    throw e;
+  }
 }
 
 export interface EventMap {
@@ -80,6 +103,8 @@ export const api = {
   detectLocalSteam: () => call<LocalSteam>("detect_local_steam"),
   logs: () => call<LogLine[]>("get_logs"),
   clearLogs: () => call<void>("clear_logs"),
+  /** Opens the folder that holds log.txt, with the file selected. */
+  openLogFile: () => call<void>("open_log_file"),
 
   addLocalAccount: (steamId: string) => call<void>("add_local_account", { steamId }),
   authStartQr: (mode: string) => call<string>("auth_start_qr", { mode }),

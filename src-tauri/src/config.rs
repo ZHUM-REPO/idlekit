@@ -260,3 +260,65 @@ impl Config {
         self.accounts.iter_mut().find(|a| a.steam_id == steam_id)
     }
 }
+
+/// What differs between two sets of settings, one line per setting, for the
+/// log: "farming.checkMinutes: 10 → 15". Free text the user typed (the custom
+/// status line) is only reported as changed, not quoted.
+pub fn setting_changes(before: &Settings, after: &Settings) -> Vec<String> {
+    fn walk(path: &str, a: &serde_json::Value, b: &serde_json::Value, out: &mut Vec<String>) {
+        use serde_json::Value;
+        match (a, b) {
+            (Value::Object(x), Value::Object(y)) => {
+                let mut keys: Vec<&String> = x.keys().chain(y.keys()).collect();
+                keys.sort();
+                keys.dedup();
+                for key in keys {
+                    let next = if path.is_empty() { key.clone() } else { format!("{path}.{key}") };
+                    walk(&next, x.get(key).unwrap_or(&Value::Null), y.get(key).unwrap_or(&Value::Null), out);
+                }
+            }
+            _ if a != b => {
+                if path.ends_with("Text") {
+                    out.push(format!("{path}: changed"));
+                    return;
+                }
+                let show = |v: &Value| {
+                    let text = v.to_string();
+                    if text.chars().count() > 80 {
+                        text.chars().take(80).collect::<String>() + "…"
+                    } else {
+                        text
+                    }
+                };
+                out.push(format!("{path}: {} → {}", show(a), show(b)));
+            }
+            _ => {}
+        }
+    }
+    let mut out = Vec::new();
+    if let (Ok(a), Ok(b)) = (serde_json::to_value(before), serde_json::to_value(after)) {
+        walk("", &a, &b, &mut out);
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn setting_changes_name_each_setting_that_moved() {
+        let before = Settings::default();
+        assert!(setting_changes(&before, &before).is_empty());
+        let mut after = before.clone();
+        after.close_action = "tray".into();
+        after.farming.check_minutes += 5;
+        after.idle_status_text = "something private".into();
+        let changes = setting_changes(&before, &after);
+        assert_eq!(changes.len(), 3, "{changes:?}");
+        assert!(changes.contains(&format!("closeAction: \"{}\" → \"tray\"", before.close_action)));
+        assert!(changes.contains(&format!("farming.checkMinutes: {} → {}", before.farming.check_minutes, after.farming.check_minutes)));
+        assert!(changes.contains(&"idleStatusText: changed".to_string()));
+        assert!(!changes.iter().any(|c| c.contains("private")));
+    }
+}
