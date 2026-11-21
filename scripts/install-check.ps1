@@ -195,6 +195,22 @@ Write-Output "Desktop shortcut: $(if (Test-Path -LiteralPath $desktopShortcut) {
 
 # --- start the installed app ------------------------------------------------
 
+# IdleKit keeps a log file from 0.2.2 on.
+$logFile = Join-Path $env:APPDATA "$identifier\log.txt"
+$loadedLine = "The window loaded"
+$logged = $false
+try { $logged = [version]$entry.DisplayVersion -ge [version]"0.2.2" } catch { $logged = $false }
+function Read-Log {
+    # The app has the file open for writing, so read it without locking it.
+    try {
+        $stream = [IO.File]::Open($logFile, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite)
+        try { return ([IO.StreamReader]::new($stream, [Text.Encoding]::UTF8)).ReadToEnd() } finally { $stream.Dispose() }
+    } catch {
+        return ""
+    }
+}
+if ($logged -and (Test-Path -LiteralPath $logFile)) { Remove-Item -LiteralPath $logFile -Force }
+
 Write-Output ""
 Write-Output "Starting the installed app..."
 $app = Start-Process -FilePath $exe -PassThru
@@ -244,6 +260,12 @@ if ($app.HasExited) {
         Problem "A second copy of IdleKit stayed open next to the first"
     }
 
+    # The window writes a line to the log once its contents are up.
+    if ($logged) {
+        $deadline = (Get-Date).AddSeconds(60)
+        while ((Get-Date) -lt $deadline -and -not (Read-Log).Contains($loadedLine)) { Start-Sleep -Seconds 2 }
+    }
+
     Stop-Process -Id $app.Id -Force -ErrorAction SilentlyContinue
     $null = $app.WaitForExit(15000)
 }
@@ -253,6 +275,38 @@ Start-Sleep -Seconds 2
 foreach ($folder in "$env:APPDATA\$identifier", "$env:LOCALAPPDATA\$identifier") {
     $names = @(Get-ChildItem -LiteralPath $folder -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name)
     Write-Output "$folder holds: $(if ($names.Count) { $names -join ', ' } else { 'nothing' })"
+}
+
+# --- the log file -----------------------------------------------------------
+
+if ($logged) {
+    Write-Output ""
+    $log = Read-Log
+    if (-not $log) {
+        Problem "The app wrote no log file at $logFile"
+    } else {
+        Write-Output "log.txt ($((Get-Item -LiteralPath $logFile).Length) bytes):"
+        $log -split "`n" | ForEach-Object { "  $($_.TrimEnd())" }
+        if ($log -match "======== IdleKit \S+ started on windows") {
+            Passed "the app keeps a log file (log.txt) and each run starts with its version and system"
+        } else {
+            Problem "log.txt has no line saying which version started on which system"
+        }
+        if ($log.Contains($loadedLine)) {
+            Passed "the window's contents loaded and what happens in the window reaches log.txt"
+        } else {
+            Problem "The window opened but its contents had not loaded after a minute (nothing from the window in log.txt)"
+        }
+        $private = @($env:USERNAME, $env:COMPUTERNAME) | Where-Object { $_ -and $_.Length -ge 3 }
+        $found = @($private | Where-Object { $log.IndexOf($_, [StringComparison]::OrdinalIgnoreCase) -ge 0 })
+        if ($found.Count -gt 0) {
+            Problem "log.txt contains this machine's user or computer name"
+        } else {
+            Passed "log.txt holds neither the Windows user name nor the computer name"
+        }
+    }
+} else {
+    Write-Output "This version is from before the log file (0.2.2), so there is no log.txt to check."
 }
 
 # --- uninstall --------------------------------------------------------------
