@@ -90,6 +90,10 @@ function applyTheme(s: Settings) {
 
 /** Numbers log lines in the order the window got them. */
 let nextLine = 1;
+/** How many lines the Logs page keeps. */
+const LOG_LINES = 1500;
+/** The longest new lines wait when no frame is drawn to add them on. */
+const LOG_HAND_OVER_MS = 500;
 
 export const useApp = create<State>((set, get) => ({
   ready: false,
@@ -154,16 +158,26 @@ export const useApp = create<State>((set, get) => ({
       return;
     }
     // Lines can come in bursts. They are gathered and added once per frame,
-    // so a burst copies the list once, not once per line.
+    // so a burst copies the list once, not once per line. A window that isn't
+    // on screen may draw no frames, so a timer hands them over as well, and
+    // no more lines wait than the list keeps.
     let arrived: LogLine[] = [];
+    let frame = 0;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const handOver = () => {
+      cancelAnimationFrame(frame);
+      clearTimeout(timer);
+      timer = undefined;
+      const batch = arrived;
+      arrived = [];
+      if (batch.length) set((s) => ({ logs: [...s.logs, ...batch].slice(-LOG_LINES) }));
+    };
     on("log://line", (l) => {
       arrived.push({ ...l, n: nextLine++ });
-      if (arrived.length > 1) return;
-      requestAnimationFrame(() => {
-        const batch = arrived;
-        arrived = [];
-        set((s) => ({ logs: [...s.logs, ...batch].slice(-1500) }));
-      });
+      if (arrived.length > LOG_LINES) arrived.splice(0, arrived.length - LOG_LINES);
+      if (timer !== undefined) return;
+      frame = requestAnimationFrame(handOver);
+      timer = setTimeout(handOver, LOG_HAND_OVER_MS);
     });
     on("state://accounts", () => void get().refreshAccounts());
     on("cm://status", (c) => set((s) => ({ cm: { ...s.cm, [c.steamId]: c } })));

@@ -7,12 +7,13 @@ import type { LogLine } from "../lib/types";
 
 /**
  * One line. Memoized and keyed by the line's own number, so a new line draws
- * one row and leaves the others alone. Rows scrolled out of view are skipped
- * by the browser when it lays the list out.
+ * one row and leaves the others alone. A row is always laid out at its real
+ * height: the list scrolls to its end, and an estimated height for a line that
+ * wraps would leave part of the newest line below the edge.
  */
 const Row = memo(function Row({ line: l }: { line: LogLine }) {
   return (
-    <div className="flex gap-3 [contain-intrinsic-size:auto_20px] [content-visibility:auto]">
+    <div className="flex gap-3">
       <span className="flex-none text-faint">{timeOfDay(l.ts)}</span>
       <span
         className={cx("w-16 flex-none truncate", l.level === "error" ? "text-bad" : l.level === "warn" ? "text-run" : "text-faint")}
@@ -43,9 +44,12 @@ export function LogsPage() {
     });
   }, [logs, level, query]);
 
+  // Follows the newest line. The count alone can't tell: once the list is
+  // full, a new line pushes the oldest out and the count stays the same.
+  const newest = shown[shown.length - 1]?.n;
   useEffect(() => {
     end.current?.scrollIntoView({ block: "end" });
-  }, [shown.length]);
+  }, [shown.length, newest]);
 
   return (
     <div className="flex h-full flex-col pb-4">

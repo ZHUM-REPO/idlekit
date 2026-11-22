@@ -2,6 +2,15 @@
 
 The section for the version being released becomes the text of its release page.
 
+## 0.9
+
+Fixes for two faults that 0.8 brought to the Logs page, and two precautions.
+
+- **The Logs page follows the newest line again.** Since 0.8 it stopped following once it held 1,500 lines: new lines arrived below the visible part.
+- **A long newest line is shown whole.** Since 0.8 a new line long enough to wrap showed only its first row until the next line arrived.
+- **Log lines reach the window even when it draws nothing.** New lines are added when the window draws a frame. If it draws none, as a hidden window may not, a timer now adds them within half a second, and no more lines wait than the page keeps. `log.txt` was never affected.
+- **Each idling game's helper checks in with Steam four times a second.** 0.8 lowered this from ten times to once, which is slower than Valve advises. Nothing is known to have gone wrong with once; four keeps most of the saving.
+
 ## 0.8
 
 Speed work from the performance review. Nothing looks or behaves differently.
