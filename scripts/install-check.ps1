@@ -17,6 +17,7 @@ $identifier = "dev.idlekit.app"
 $uninstallKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\$product"
 $problems = [System.Collections.Generic.List[string]]::new()
 $passed = [System.Collections.Generic.List[string]]::new()
+$notes = [System.Collections.Generic.List[string]]::new()
 
 function Problem([string]$text) {
     $problems.Add($text)
@@ -26,6 +27,12 @@ function Problem([string]$text) {
 function Passed([string]$text) {
     $passed.Add($text)
     Write-Output "ok: $text"
+}
+
+# Worth knowing, but no reason to fail the check: it may be this machine's doing.
+function Noted([string]$text) {
+    $notes.Add($text)
+    Write-Output "note: $text"
 }
 
 # Starts a program and waits for it to end. Gives its exit code, or nothing
@@ -45,6 +52,7 @@ function Finish {
     if ($env:GITHUB_STEP_SUMMARY) {
         $lines = @("### Install check: $(Split-Path -Leaf $Installer)", "")
         $lines += @($passed | ForEach-Object { "- ok: $_" })
+        $lines += @($notes | ForEach-Object { "- note: $_" })
         $lines += @($problems | ForEach-Object { "- **problem:** $_" })
         Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY -Value $lines
     }
@@ -203,6 +211,9 @@ try { $logged = [version]$entry.DisplayVersion -ge [version]"0.2.2" } catch { $l
 # one as soon as the window's script started.
 $loadedLine = "The window is ready"
 try { if ([version]$entry.DisplayVersion -lt [version]"0.5.0") { $loadedLine = "The window loaded" } } catch { }
+# What the app writes after looking for a newer version (every look from 1.1
+# on; before that only a find or a failure).
+$updateLine = '(?m)^\S+ \S+\s+\w+\s+update\s+(.*)$'
 function Read-Log {
     # The app has the file open for writing, so read it without locking it.
     try {
@@ -269,6 +280,10 @@ if ($app.HasExited) {
         while ((Get-Date) -lt $deadline -and -not (Read-Log).Contains($loadedLine)) { Start-Sleep -Seconds 2 }
         # A page that breaks right after showing gets a moment to say so.
         Start-Sleep -Seconds 4
+        # A few seconds after starting, the app looks for a newer version and
+        # says in the log what came of it. Give it time to.
+        $deadline = (Get-Date).AddSeconds(40)
+        while ((Get-Date) -lt $deadline -and (Read-Log) -notmatch $updateLine) { Start-Sleep -Seconds 2 }
     }
 
     Stop-Process -Id $app.Id -Force -ErrorAction SilentlyContinue
@@ -308,6 +323,18 @@ if ($logged) {
             Problem "log.txt reports $($faults.Count) fault(s) in the window or the app: $($faults[0].Trim())"
         } else {
             Passed "log.txt reports no fault in the window or the app"
+        }
+        # The look for a newer version, as far as it shows: this is the only
+        # place the updater meets a real Windows machine before a release.
+        if ($log -match $updateLine) {
+            $said = $Matches[1].Trim()
+            if ($said -match "is available|is the newest") {
+                Passed "the app looked for a newer version and got an answer ($said)"
+            } else {
+                Noted "the app looked for a newer version and said: $said"
+            }
+        } else {
+            Noted "the app wrote nothing about looking for a newer version within 40 seconds"
         }
         $private = @($env:USERNAME, $env:COMPUTERNAME) | Where-Object { $_ -and $_.Length -ge 3 }
         $found = @($private | Where-Object { $log.IndexOf($_, [StringComparison]::OrdinalIgnoreCase) -ge 0 })
