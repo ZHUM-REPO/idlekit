@@ -2,6 +2,15 @@
 
 The section for the version being released becomes the text of its release page.
 
+## 1.1
+
+A copy of IdleKit that was left running never noticed new releases. This release fixes that. **A copy older than 1.1 still has the fault, so install this one by hand once** (or press the check button under Settings → Updates in the old copy).
+
+- **IdleKit keeps looking for updates while it runs.** It used to look once, a few seconds after starting. A copy left open or in the tray for days never looked again, and a look that failed, for instance on a busy connection at startup, was not repeated. Now it looks every four hours, and after a failed look again in ten minutes.
+- **A newer version stays announced.** Besides the bar under the top bar, the version line at the bottom of the sidebar says “1.1, 1.2 available” for as long as that is so, also after the bar was closed. Clicking it opens Settings, where the update is installed. Updates are still never installed without asking.
+- **The version is shown beside the name** at the top left of the window.
+- Every look for updates now leaves a line in the log, also when nothing newer was found, so `log.txt` shows whether and when it looked.
+
 ## 1.0
 
 - **Hide NSFW games.** A new switch under Settings → Appearance. When it is on, games that Steam labels “Adult Only Sexual Content” or “Frequent Nudity or Sexual Content” are left out of every list in the window: the Library, Idling, Card farming, the Achievements manager and unlock queue, and the Market's inventory and listings. Games Steam labels only “Some Nudity or Sexual Content”, such as many mainstream games, stay.

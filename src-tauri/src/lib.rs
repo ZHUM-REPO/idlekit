@@ -70,15 +70,10 @@ async fn startup(app: App, handle: AppHandle) {
     let cfg = app.config();
     let s = cfg.settings.clone();
     logbus::info("app", format!("IdleKit {} started", updates::shown(env!("CARGO_PKG_VERSION"))));
-    if s.check_updates {
-        // On its own, so waiting for Steam below doesn't hold it up, and not
-        // the first thing the app does: Steam connections come first.
-        let (app, handle) = (app.clone(), handle.clone());
-        tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_secs(8)).await;
-            updates::check(&app, &handle).await;
-        });
-    }
+    // On its own, so waiting for Steam below doesn't hold it up. It looks a
+    // few seconds from now and then every few hours for as long as IdleKit
+    // runs, whenever "look for updates" is on.
+    tokio::spawn(updates::keep_looking(app.clone(), handle.clone()));
     if !app.helpers.helper_path().exists() {
         logbus::warn(
             "app",

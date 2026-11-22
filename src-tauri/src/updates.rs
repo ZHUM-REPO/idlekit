@@ -15,6 +15,16 @@ const CHECK_TIMEOUT: Duration = Duration::from_secs(20);
 /// The installer is a few megabytes; this only guards against a stalled connection.
 const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 const PROGRESS_EVERY: Duration = Duration::from_millis(200);
+/// The first look after starting waits this long: Steam connections come first.
+const FIRST_LOOK: Duration = Duration::from_secs(8);
+/// IdleKit can run for weeks in the tray, so it keeps looking while it runs.
+const LOOK_EVERY: Duration = Duration::from_secs(4 * 60 * 60);
+/// After a look that failed (no connection, a slow one) it looks again sooner,
+/// a few times, then settles for once an hour until one works.
+const LOOK_AGAIN: Duration = Duration::from_secs(10 * 60);
+const LOOK_AGAIN_TIMES: u32 = 3;
+const LOOK_AGAIN_LATER: Duration = Duration::from_secs(60 * 60);
+const CHECK_FAILED: &str = "Couldn't check for updates";
 
 #[derive(Serialize, Clone, Debug, Default, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -31,7 +41,7 @@ pub struct UpdateState {
     pub current: String,
     pub phase: Phase,
     pub available: Option<Available>,
-    /// Unix time in milliseconds of the last finished check.
+    /// Unix time in milliseconds of the last look that got an answer.
     pub checked_at: Option<i64>,
     pub error: Option<String>,
     pub downloaded: u64,
@@ -110,20 +120,71 @@ fn explain(e: &tauri_plugin_updater::Error) -> String {
     }
 }
 
+/// How long to wait before looking again, given how many looks in a row have failed.
+fn next_look(failures_in_a_row: u32) -> Duration {
+    match failures_in_a_row {
+        0 => LOOK_EVERY,
+        n if n <= LOOK_AGAIN_TIMES => LOOK_AGAIN,
+        _ => LOOK_AGAIN_LATER,
+    }
+}
+
+/// Looks for a newer version shortly after starting and then for as long as
+/// IdleKit runs, while "look for updates" is on in Settings. One look at
+/// startup is not enough: a copy left running never learned of a release, and
+/// one failed look (a busy connection at startup) was never repeated.
+pub async fn keep_looking(app: App, handle: AppHandle) {
+    if endpoints(&handle).is_empty() {
+        return;
+    }
+    let every = |normal: Duration| -> Duration {
+        // For trying this out while developing: every look this many seconds apart.
+        #[cfg(debug_assertions)]
+        if let Some(secs) = std::env::var("IDLEKIT_UPDATE_EVERY_SECS").ok().and_then(|v| v.trim().parse().ok()) {
+            return Duration::from_secs(secs);
+        }
+        normal
+    };
+    tokio::time::sleep(FIRST_LOOK).await;
+    let mut failures = 0u32;
+    let mut first = true;
+    loop {
+        if app.settings().check_updates {
+            // The first look reports like one asked for by hand; the ones
+            // after it stay out of the way unless they find something.
+            let failed = look(&app, &handle, !first).await.1;
+            failures = if failed { failures + 1 } else { 0 };
+            first = false;
+        } else {
+            failures = 0;
+        }
+        tokio::time::sleep(every(next_look(failures))).await;
+    }
+}
+
 /// Look for a newer version. Does nothing while a check or an install is under way.
 pub async fn check(app: &App, handle: &AppHandle) -> UpdateState {
+    look(app, handle, false).await.0
+}
+
+/// One look for a newer version; also says whether it failed. A quiet look is
+/// one nobody asked for: when it fails, the failure goes to the log and is not
+/// put in front of the user, and whatever was on screen stays.
+async fn look(app: &App, handle: &AppHandle, quiet: bool) -> (UpdateState, bool) {
     let endpoints = endpoints(handle);
     if endpoints.is_empty() {
-        return snapshot(app, handle);
+        return (snapshot(app, handle), false);
     }
     {
         let mut state = app.updates.state.lock().unwrap();
         if state.phase != Phase::Idle {
             drop(state);
-            return snapshot(app, handle);
+            return (snapshot(app, handle), false);
         }
         state.phase = Phase::Checking;
-        state.error = None;
+        if !quiet {
+            state.error = None;
+        }
     }
     publish(app, handle);
 
@@ -133,32 +194,50 @@ pub async fn check(app: &App, handle: &AppHandle) -> UpdateState {
     }
     .await;
 
+    let failed = found.is_err();
     {
         let mut state = app.updates.state.lock().unwrap();
         state.phase = Phase::Idle;
-        state.checked_at = Some(chrono::Utc::now().timestamp_millis());
+        let current = shown(&handle.package_info().version.to_string());
+        // A look that worked answers an earlier "couldn't check".
+        if !failed && state.error.as_deref().is_some_and(|e| e.starts_with(CHECK_FAILED)) {
+            state.error = None;
+        }
         match found {
             Ok(Some(update)) => {
-                logbus::info("update", format!("IdleKit {} is available", shown(&update.version)));
-                state.available = Some(Available {
-                    version: shown(&update.version),
-                    notes: update.body.clone().unwrap_or_default(),
-                });
+                state.checked_at = Some(chrono::Utc::now().timestamp_millis());
+                let version = shown(&update.version);
+                // Said once per version, not at every look that finds it again.
+                if state.available.as_ref().map(|a| a.version.as_str()) != Some(version.as_str()) {
+                    logbus::info("update", format!("IdleKit {version} is available; this is {current}"));
+                }
+                state.available = Some(Available { version, notes: update.body.clone().unwrap_or_default() });
                 *app.updates.found.lock().unwrap() = Some(update);
             }
             Ok(None) => {
+                state.checked_at = Some(chrono::Utc::now().timestamp_millis());
+                let line = format!("Looked for a newer version: {current} is the newest");
+                if quiet {
+                    logbus::debug("update", line);
+                } else {
+                    logbus::info("update", line);
+                }
                 state.available = None;
                 *app.updates.found.lock().unwrap() = None;
             }
             Err(e) => {
                 let why = explain(&e);
-                logbus::warn("update", format!("Couldn't check for updates: {why}"));
-                state.error = Some(format!("Couldn't check for updates: {why}"));
+                if quiet {
+                    logbus::debug("update", format!("{CHECK_FAILED}: {why}. Looking again later"));
+                } else {
+                    logbus::warn("update", format!("{CHECK_FAILED}: {why}"));
+                    state.error = Some(format!("{CHECK_FAILED}: {why}"));
+                }
             }
         }
     }
     publish(app, handle);
-    snapshot(app, handle)
+    (snapshot(app, handle), failed)
 }
 
 /// Download the release the last check found and install it. On Windows this
@@ -266,6 +345,20 @@ mod tests {
         assert_eq!(shown("1.0.0"), "1.0");
         assert_eq!(shown("0.2.2"), "0.2.2");
         assert_eq!(shown("10.0"), "10.0");
+    }
+
+    #[test]
+    fn looks_again_sooner_after_a_failure() {
+        // every few hours while all is well
+        assert_eq!(next_look(0), LOOK_EVERY);
+        // sooner after a look that failed, a few times over
+        for failures in 1..=LOOK_AGAIN_TIMES {
+            assert_eq!(next_look(failures), LOOK_AGAIN);
+        }
+        // then hourly, so a PC that is offline for days isn't kept busy
+        assert_eq!(next_look(LOOK_AGAIN_TIMES + 1), LOOK_AGAIN_LATER);
+        assert_eq!(next_look(500), LOOK_AGAIN_LATER);
+        assert!(LOOK_AGAIN < LOOK_AGAIN_LATER && LOOK_AGAIN_LATER < LOOK_EVERY);
     }
 
     #[test]

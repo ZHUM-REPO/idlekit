@@ -327,9 +327,13 @@ export function SettingsPage() {
 
         <Group title="Updates">
           <UpdateField />
-          <Field inline label="Look for updates when IdleKit opens">
+          <Field
+            inline
+            label="Look for updates by itself"
+            hint="A few seconds after IdleKit opens, then every few hours for as long as it runs, the tray included. A newer version is offered, never installed without asking."
+          >
             <Switch
-              label="Look for updates when IdleKit opens"
+              label="Look for updates by itself"
               checked={s.checkUpdates}
               disabled={!canUpdate}
               onChange={(v) => void save({ checkUpdates: v })}

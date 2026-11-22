@@ -53,6 +53,7 @@ export function Sidebar() {
   const page = useApp((s) => s.page);
   const go = useApp((s) => s.go);
   const version = useApp((s) => s.version);
+  const newer = useApp((s) => s.update?.available?.version);
   const activeId = useApp((s) => s.activeId);
   const idleCount = useApp((s) => (activeId ? (s.idle[activeId]?.length ?? 0) : 0));
   const farming = useApp((s) => (activeId ? !!s.farm[activeId]?.running : false));
@@ -82,13 +83,31 @@ export function Sidebar() {
       <div {...dragRegion} className="-mx-3 mb-2 flex h-[58px] flex-none items-center gap-2.5 px-[18px]">
         <Logo />
         <span className="heading text-[18px] font-semibold">IdleKit</span>
+        {/* Which version this is, where it can't be missed. */}
+        <span className="num mt-[3px] text-[12px] text-faint" title={`IdleKit version ${version}`}>
+          {version}
+        </span>
       </div>
       <div className="flex flex-col gap-0.5">{NAV.map(item)}</div>
       <div className="mt-auto flex flex-col gap-0.5 border-t border-line pt-3">{NAV_BOTTOM.map(item)}</div>
-      <div className="mt-3 truncate px-2.5 text-[11px] text-faint">
-        Version {version}
-        {!inTauri && ", browser preview"}
-      </div>
+      {newer ? (
+        // Stays for as long as a newer version exists, also after its bar was closed.
+        <button
+          onClick={() => go("settings")}
+          title={`IdleKit ${newer} is available. Open Settings to install it.`}
+          className="mt-3 flex items-center gap-2 truncate rounded-md px-2.5 py-1 text-left text-[12px] text-ink hover:bg-raised"
+        >
+          <span className="lamp on flex-none" />
+          <span className="truncate">
+            Version {version}, {newer} available
+          </span>
+        </button>
+      ) : (
+        <div className="mt-3 truncate px-2.5 text-[11px] text-faint">
+          Version {version}
+          {!inTauri && ", browser preview"}
+        </div>
+      )}
     </nav>
   );
 }
