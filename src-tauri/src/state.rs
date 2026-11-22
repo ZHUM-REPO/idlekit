@@ -13,6 +13,7 @@ use std::ops::Deref;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 #[derive(Serialize, Clone, Debug, Default)]
 #[serde(rename_all = "camelCase")]
@@ -25,6 +26,9 @@ pub struct GameEntry {
     pub last_played: u32,
     pub manual: bool,
 }
+
+/// The shortest gap between two lookups of an account's unnamed games.
+const ASK_FOR_NAMES_EVERY: Duration = Duration::from_secs(60);
 
 #[derive(Clone)]
 pub struct App(Arc<Inner>);
@@ -54,6 +58,11 @@ pub struct Inner {
     pub updates: crate::updates::Updates,
     web: tokio::sync::Mutex<HashMap<String, Arc<WebSession>>>,
     games: Mutex<HashMap<String, Vec<GameEntry>>>,
+    /// What Steam's store calls games, by app id: for the ones that the files
+    /// on this PC list by number only.
+    store_names: Mutex<HashMap<u32, String>>,
+    /// Accounts whose unnamed games are being asked about, and since when.
+    naming: Mutex<HashMap<String, Instant>>,
     /// appids with an open Achievement Manager view (keeps their helper alive)
     pub ach_open: Mutex<HashSet<u32>>,
     pub market_cancel: AtomicBool,
@@ -84,6 +93,8 @@ impl App {
             unlocker: UnlockerManager::default(),
             web: tokio::sync::Mutex::new(HashMap::new()),
             games: Mutex::new(HashMap::new()),
+            store_names: Mutex::new(HashMap::new()),
+            naming: Mutex::new(HashMap::new()),
             ach_open: Mutex::new(HashSet::new()),
             market_cancel: AtomicBool::new(false),
         }))
@@ -239,7 +250,30 @@ impl App {
         self.data_dir.join(format!("games_{steam_id}.json"))
     }
 
-    fn to_entries(owned: Vec<OwnedGame>, account: &Account) -> Vec<GameEntry> {
+    /// What a game is shown as until its name is known.
+    fn placeholder(appid: u32) -> String {
+        format!("App {appid}")
+    }
+
+    /// True for a game that has no name of its own yet.
+    fn unnamed(name: &str, appid: u32) -> bool {
+        let name = name.trim();
+        name.is_empty() || name == Self::placeholder(appid)
+    }
+
+    /// The name to show: the game's own, else the store's, else "App <id>".
+    fn name_for(name: String, appid: u32, store: &HashMap<u32, String>) -> String {
+        if !Self::unnamed(&name, appid) {
+            return name;
+        }
+        store.get(&appid).cloned().unwrap_or_else(|| Self::placeholder(appid))
+    }
+
+    fn sort_by_name(list: &mut [GameEntry]) {
+        list.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    }
+
+    fn to_entries(owned: Vec<OwnedGame>, account: &Account, store: &HashMap<u32, String>) -> Vec<GameEntry> {
         let mut map: HashMap<u32, GameEntry> = owned
             .into_iter()
             .map(|g| {
@@ -255,7 +289,7 @@ impl App {
                     g.appid,
                     GameEntry {
                         appid: g.appid,
-                        name: if g.name.is_empty() { format!("App {}", g.appid) } else { g.name },
+                        name: Self::name_for(g.name, g.appid, store),
                         playtime_minutes: g.playtime_minutes,
                         icon_url,
                         has_stats: g.has_stats,
@@ -268,14 +302,111 @@ impl App {
         for m in &account.manual_games {
             map.entry(m.appid).or_insert_with(|| GameEntry {
                 appid: m.appid,
-                name: m.name.clone(),
+                name: Self::name_for(m.name.clone(), m.appid, store),
                 manual: true,
                 ..Default::default()
             });
         }
         let mut list: Vec<GameEntry> = map.into_values().collect();
-        list.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+        Self::sort_by_name(&mut list);
         list
+    }
+
+    fn entries(&self, owned: Vec<OwnedGame>, account: &Account) -> Vec<GameEntry> {
+        Self::to_entries(owned, account, &self.store_names.lock().unwrap())
+    }
+
+    /// Takes in names from Steam's store. Every loaded games list that has one
+    /// of these games without a name gets it, and the saved list too, so the
+    /// name is there next time without asking. Answers which accounts' lists
+    /// changed.
+    pub fn adopt_names(&self, found: &HashMap<u32, String>) -> Vec<String> {
+        if found.is_empty() {
+            return Vec::new();
+        }
+        self.store_names.lock().unwrap().extend(found.iter().map(|(id, name)| (*id, name.clone())));
+        let mut changed = Vec::new();
+        {
+            let mut games = self.games.lock().unwrap();
+            for (steam_id, list) in games.iter_mut() {
+                let mut any = false;
+                for g in list.iter_mut().filter(|g| Self::unnamed(&g.name, g.appid)) {
+                    if let Some(name) = found.get(&g.appid) {
+                        g.name = name.clone();
+                        any = true;
+                    }
+                }
+                if any {
+                    Self::sort_by_name(list);
+                    changed.push(steam_id.clone());
+                }
+            }
+        }
+        for steam_id in &changed {
+            let file = self.games_file(steam_id);
+            let saved: Option<Vec<OwnedGame>> = std::fs::read_to_string(&file).ok().and_then(|t| serde_json::from_str(&t).ok());
+            if let Some(mut owned) = saved {
+                for g in owned.iter_mut().filter(|g| Self::unnamed(&g.name, g.appid)) {
+                    if let Some(name) = found.get(&g.appid) {
+                        g.name = name.clone();
+                    }
+                }
+                if let Ok(text) = serde_json::to_string(&owned) {
+                    let _ = std::fs::write(&file, text);
+                }
+            }
+        }
+        changed
+    }
+
+    /// Takes in the names that came with a store lookup and tells the window
+    /// about every games list that changed.
+    pub fn names_arrived(&self, found: &HashMap<u32, String>) {
+        for steam_id in self.adopt_names(found) {
+            logbus::emit("games://updated", steam_id);
+        }
+    }
+
+    /// Games that Steam's files on this PC list by number only get their names
+    /// from Steam's store: at once where a lookup has been made before, and
+    /// otherwise by a lookup that runs on after the list has been handed over.
+    async fn name_the_unnamed(&self, steam_id: &str, entries: Vec<GameEntry>) -> Vec<GameEntry> {
+        let ids: Vec<u32> = entries.iter().filter(|g| Self::unnamed(&g.name, g.appid)).map(|g| g.appid).collect();
+        if ids.is_empty() {
+            return entries;
+        }
+        let known = self.art.names(&ids).await;
+        let entries = if known.is_empty() {
+            entries
+        } else {
+            // Without a notice to the window: this list is on its way there.
+            self.adopt_names(&known);
+            self.games.lock().unwrap().get(steam_id).cloned().unwrap_or(entries)
+        };
+        let ask: Vec<u32> = ids.into_iter().filter(|id| !known.contains_key(id)).collect();
+        if ask.is_empty() {
+            return entries;
+        }
+        {
+            // One lookup per account at a time, and not one after another
+            // while Steam can't be reached.
+            let mut naming = self.naming.lock().unwrap();
+            if naming.get(steam_id).is_some_and(|since| since.elapsed() < ASK_FOR_NAMES_EVERY) {
+                return entries;
+            }
+            naming.insert(steam_id.to_string(), Instant::now());
+        }
+        let app = self.clone();
+        tokio::spawn(async move {
+            let language = app.settings().language;
+            let found = app.art.resolve(&app.http, &language, &ask).await;
+            let names: HashMap<u32, String> = found.into_iter().filter_map(|(id, art)| art.name.map(|name| (id, name))).collect();
+            if !names.is_empty() {
+                logbus::info("library", format!("Steam's store named {} of {} game(s) that had no name", names.len(), ask.len()));
+            }
+            app.names_arrived(&names);
+        });
+        entries
     }
 
     pub fn cached_games(&self, steam_id: &str) -> Option<Vec<GameEntry>> {
@@ -285,7 +416,7 @@ impl App {
         let text = std::fs::read_to_string(self.games_file(steam_id)).ok()?;
         let owned: Vec<OwnedGame> = serde_json::from_str(&text).ok()?;
         let account = self.account(steam_id).ok()?;
-        let entries = Self::to_entries(owned, &account);
+        let entries = self.entries(owned, &account);
         self.games.lock().unwrap().insert(steam_id.to_string(), entries.clone());
         Some(entries)
     }
@@ -296,14 +427,15 @@ impl App {
             .unwrap()
             .get(steam_id)
             .and_then(|l| l.iter().find(|g| g.appid == appid).map(|g| g.name.clone()))
-            .unwrap_or_else(|| format!("App {appid}"))
+            .or_else(|| self.store_names.lock().unwrap().get(&appid).cloned())
+            .unwrap_or_else(|| Self::placeholder(appid))
     }
 
     /// Fetch the owned-games list from the best available source.
     pub async fn load_games(&self, steam_id: &str, force: bool) -> Result<Vec<GameEntry>> {
         if !force {
             if let Some(g) = self.cached_games(steam_id) {
-                return Ok(g);
+                return Ok(self.name_the_unnamed(steam_id, g).await);
             }
         }
         let account = self.account(steam_id)?;
@@ -357,12 +489,23 @@ impl App {
                 bail!("Could not load your games: {}", errors.join("; "));
             }
         };
+        // A fresh list from the files on this PC has no names for games that
+        // aren't installed: keep the ones the store gave earlier.
+        let mut owned = owned;
+        {
+            let store = self.store_names.lock().unwrap();
+            for g in owned.iter_mut().filter(|g| Self::unnamed(&g.name, g.appid)) {
+                if let Some(name) = store.get(&g.appid) {
+                    g.name = name.clone();
+                }
+            }
+        }
         if let Ok(text) = serde_json::to_string(&owned) {
             let _ = std::fs::write(self.games_file(steam_id), text);
         }
-        let entries = Self::to_entries(owned, &account);
+        let entries = self.entries(owned, &account);
         self.games.lock().unwrap().insert(steam_id.to_string(), entries.clone());
-        Ok(entries)
+        Ok(self.name_the_unnamed(steam_id, entries).await)
     }
 
     /// Re-merge manual games after the user edits that list.
@@ -372,7 +515,7 @@ impl App {
             .ok()
             .and_then(|t| serde_json::from_str(&t).ok())
             .unwrap_or_default();
-        let entries = Self::to_entries(owned, &account);
+        let entries = self.entries(owned, &account);
         self.games.lock().unwrap().insert(steam_id.to_string(), entries);
     }
 
@@ -414,5 +557,58 @@ impl App {
             }
         });
         self.emit_accounts();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::ManualGame;
+
+    #[test]
+    fn unnamed_games_take_the_stores_name() {
+        let owned = vec![
+            // installed: Steam's files on this PC give the name
+            OwnedGame { appid: 10, name: "Installed Game".into(), ..Default::default() },
+            // played but not installed: listed by number only
+            OwnedGame { appid: 1030300, playtime_minutes: 5490, ..Default::default() },
+            OwnedGame { appid: 1044720, name: "App 1044720".into(), ..Default::default() },
+            // one the store has no name for either
+            OwnedGame { appid: 77, ..Default::default() },
+        ];
+        let account = Account {
+            manual_games: vec![
+                ManualGame { appid: 500, name: "App 500".into() },
+                ManualGame { appid: 600, name: "My own name".into() },
+            ],
+            ..Default::default()
+        };
+        let store = HashMap::from([
+            (10, "The Store's Name".to_string()),
+            (1030300, "Hollow Knight: Silksong".to_string()),
+            (1044720, "Farthest Frontier".to_string()),
+            (500, "Added By Number".to_string()),
+            (600, "Something Else".to_string()),
+        ]);
+        let named = App::to_entries(owned.clone(), &account, &store);
+        let name = |appid: u32| named.iter().find(|g| g.appid == appid).unwrap().name.clone();
+        assert_eq!(name(1030300), "Hollow Knight: Silksong");
+        assert_eq!(name(1044720), "Farthest Frontier");
+        assert_eq!(name(500), "Added By Number");
+        // a name the game already has is never replaced
+        assert_eq!(name(10), "Installed Game");
+        assert_eq!(name(600), "My own name");
+        // no name anywhere: the number, as before
+        assert_eq!(name(77), "App 77");
+        // in order of the names shown
+        let order: Vec<u32> = named.iter().map(|g| g.appid).collect();
+        assert_eq!(order, vec![500, 77, 1044720, 1030300, 10, 600]);
+        assert_eq!(named.iter().find(|g| g.appid == 1030300).unwrap().playtime_minutes, 5490);
+
+        // with nothing from the store, everything is as it was
+        let bare = App::to_entries(owned, &account, &HashMap::new());
+        let name = |appid: u32| bare.iter().find(|g| g.appid == appid).unwrap().name.clone();
+        assert_eq!([name(1030300), name(1044720), name(500)], ["App 1030300", "App 1044720", "App 500"]);
+        assert!(App::unnamed("", 5) && App::unnamed(" App 5 ", 5) && !App::unnamed("App 6", 5) && !App::unnamed("Portal", 5));
     }
 }

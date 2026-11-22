@@ -436,7 +436,12 @@ pub async fn remove_manual_game(app: State<'_, App>, steam_id: String, appid: u3
 #[tauri::command]
 pub async fn resolve_game_art(app: State<'_, App>, appids: Vec<u32>) -> CmdResult<HashMap<u32, GameArt>> {
     let language = app.settings().language;
-    Ok(app.art.resolve(&app.http, &language, &appids).await)
+    let found = app.art.resolve(&app.http, &language, &appids).await;
+    // The lookup also says what each game is called: games listed by number
+    // only get their names from it.
+    let names: HashMap<u32, String> = found.iter().filter_map(|(id, art)| art.name.clone().map(|name| (*id, name))).collect();
+    app.names_arrived(&names);
+    Ok(found)
 }
 
 /// Which of these pictures are on disk already. Never touches the network, so

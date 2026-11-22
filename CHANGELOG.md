@@ -2,6 +2,12 @@
 
 The section for the version being released becomes the text of its release page.
 
+## 1.2
+
+- **Games shown as “App 1030300” now get their names.** An account that uses the Steam client on this PC, with no web sign-in, gets its games list from Steam's files. Those name the games that are installed, but list a game that was played and is no longer installed by its number only, and Refresh read the same files again. IdleKit now asks Steam's store for the names of those games, with the lookup that already finds their covers, so it needs no sign-in. The names appear a moment after the list the first time and are kept after that.
+- A name the game already has, from Steam's files or one you typed when adding a game by AppID, is never replaced. A game Steam's store has nothing on keeps its number.
+- A game added by AppID without a name gets its name the same way.
+
 ## 1.1
 
 A copy of IdleKit that was left running never noticed new releases. This release fixes that. **A copy older than 1.1 still has the fault, so install this one by hand once** (or press the check button under Settings → Updates in the old copy).

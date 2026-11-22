@@ -129,7 +129,7 @@ src-tauri/src/
                          licenses, profiles), market, helper (process manager), schema +
                          kv_binary (achievement schema files), local (Steam install detection),
                          art (icon, cover and banner lookup with a disk cache; also reads
-                         Steam's content labels for "Hide NSFW games"),
+                         Steam's content labels for "Hide NSFW games" and each game's name),
                          pictures (the pictures themselves on disk, fetched three at a time)
 src-tauri/helper/        steam-helper: per-game Steamworks process (JSON lines over stdio)
 src-tauri/windows/       hooks.nsh: stops running helpers before the installer copies files
@@ -146,8 +146,8 @@ scripts/                 prepare-helper.mjs (helper build); release-info, build-
 
 What has been tested, and how:
 
-- **Logic:** 58 backend unit tests (badge/licence/profile/inventory/listing parsers, binary KeyValues and achievement schemas, fee math for dollar and other wallets, pricing, farming phases, unlocker ordering, delays and time windows, the game-art lookup with its batching and cache, what the close button does, when to start in the tray, when a playtime boost ends, what the log scrubs and how its file starts over, which settings changed, pictures being fetched once, three at a time and only from Steam's image hosts, changing a list for many games at once, which of Steam's content labels hide a game, when to look for updates again) and 10 tests of the release scripts. The UI type-checks, and every UI call matches a registered command.
-- **The app on Linux**, against a mock Steam install: adding a local account, loading its games, launching `steam-helper` for a game.
+- **Logic:** 60 backend unit tests (badge/licence/profile/inventory/listing parsers, binary KeyValues and achievement schemas, fee math for dollar and other wallets, pricing, farming phases, unlocker ordering, delays and time windows, the game-art lookup with its batching and cache, what the close button does, when to start in the tray, when a playtime boost ends, what the log scrubs and how its file starts over, which settings changed, pictures being fetched once, three at a time and only from Steam's image hosts, changing a list for many games at once, which of Steam's content labels hide a game, when to look for updates again, naming games that are listed by number only) and 10 tests of the release scripts. The UI type-checks, and every UI call matches a registered command.
+- **The app on Linux**, against a mock Steam install: adding a local account, loading its games, launching `steam-helper` for a game. With a games list read from Steam's files and `scripts/fake-steam.mjs` as the store: games listed by number only were named, the installed game kept the name from its own file, a game the store doesn't know kept its number, and the names were still there on a second run with the store down.
 - **Start on launch, on Linux** against a stand-in Steam client that only appears twelve seconds after IdleKit: auto-idle waits, then starts within seconds of Steam being there; with no Steam installed it says so at once.
 - **Tray and startup, on Linux:** the close question, hiding to the tray and coming back from a second launch, the tray menu (driven over D-Bus), the sign-in startup entry being written and removed, starting in the tray, and opening the window after an update.
 - **The window's own bar, on Linux:** dragging the bar moves the window by the distance dragged, and the close button goes through the same close question as before. Maximize and resizing by the edges need a window manager, which the test machine doesn't have.

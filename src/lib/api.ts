@@ -70,6 +70,8 @@ async function call<T>(cmd: string, args?: Record<string, unknown>): Promise<T> 
 export interface EventMap {
   "log://line": LogLine;
   "state://accounts": Account[];
+  /** An account's games list changed by itself (names arrived): its Steam ID. */
+  "games://updated": string;
   "cm://status": CmStatus;
   "idle://status": IdleSnapshot;
   "farm://status": FarmStatus;

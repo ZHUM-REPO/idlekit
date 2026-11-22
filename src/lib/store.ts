@@ -180,6 +180,10 @@ export const useApp = create<State>((set, get) => ({
       timer = setTimeout(handOver, LOG_HAND_OVER_MS);
     });
     on("state://accounts", () => void get().refreshAccounts());
+    // Names for games listed by number only arrive after the list itself.
+    on("games://updated", (steamId) => {
+      if (get().games[steamId]) void get().loadGames(steamId);
+    });
     on("cm://status", (c) => set((s) => ({ cm: { ...s.cm, [c.steamId]: c } })));
     on("idle://status", (snap) => set((s) => ({ idle: { ...s.idle, [snap.steamId]: snap.games } })));
     on("farm://status", (f) => set((s) => ({ farm: { ...s.farm, [f.steamId]: f } })));

@@ -10,7 +10,8 @@
 //! the UI then falls back to the guessable URLs and asks again later.
 //!
 //! The same reply says what kind of content a game has, which is what the
-//! "Hide NSFW games" setting goes by.
+//! "Hide NSFW games" setting goes by, and what the game is called, which
+//! names the games that Steam's files on this PC list by number only.
 use crate::logbus;
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
@@ -41,6 +42,9 @@ const WARN_EVERY_SECS: i64 = 30 * 60;
 /// or Sexual Content" 1, "Frequent Violence or Gore" 2, "General Mature
 /// Content" 5) cover a large share of ordinary games and are left alone.
 const NSFW_DESCRIPTORS: [u64; 2] = [3, 4];
+/// Raised when something more is read from Steam's reply, so that entries
+/// saved before are looked up again: 1 added the content labels, 2 the name.
+const CACHE_VERSION: u8 = 2;
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
 #[serde(rename_all = "camelCase", default)]
@@ -54,6 +58,9 @@ pub struct GameArt {
     /// Whether Steam labels the game as adult-only or as frequent nudity or
     /// sexual content. `None` only in entries saved before this was read.
     pub nsfw: Option<bool>,
+    /// What Steam's store calls the game, in the language asked for. `None`
+    /// for a game the store has nothing on.
+    pub name: Option<String>,
 }
 
 impl GameArt {
@@ -68,11 +75,14 @@ struct Cached {
     art: GameArt,
     /// Unix time of the lookup.
     at: i64,
+    /// Which version of this cache wrote the entry (0 for the first ones).
+    #[serde(default)]
+    v: u8,
 }
 
 fn is_fresh(entry: &Cached, now: i64) -> bool {
-    // Saved by a version that didn't read the content labels: look it up again.
-    if entry.art.nsfw.is_none() {
+    // Saved by a version that read less from Steam's reply: look it up again.
+    if entry.v < CACHE_VERSION || entry.art.nsfw.is_none() {
         return false;
     }
     let keep = if entry.art.is_empty() { KEEP_EMPTY_SECS } else { KEEP_FOUND_SECS };
@@ -109,6 +119,7 @@ fn art_from_assets(cdn: &str, appid: u32, assets: &Value) -> GameArt {
         header: asset(text("header")),
         cover: asset(text("library_capsule").or_else(|| text("library_capsule_2x"))),
         nsfw: None,
+        name: None,
     }
 }
 
@@ -144,6 +155,7 @@ pub fn parse_items(cdn: &str, requested: &[u32], body: &Value) -> HashMap<u32, G
             *slot = art_from_assets(cdn, appid, assets);
         }
         slot.nsfw = Some(is_nsfw(item));
+        slot.name = item.get("name").and_then(Value::as_str).map(str::trim).filter(|n| !n.is_empty()).map(String::from);
     }
     out
 }
@@ -234,6 +246,17 @@ impl ArtResolver {
         Ok(parse_items(&self.cdn, ids, &body))
     }
 
+    /// The names the cache holds for these games, however old the entries.
+    /// Never touches the network.
+    pub async fn names(&self, appids: &[u32]) -> HashMap<u32, String> {
+        let mut guard = self.cache.lock().await;
+        let cache = guard.get_or_insert_with(|| self.load());
+        appids
+            .iter()
+            .filter_map(|id| cache.get(id).and_then(|entry| entry.art.name.clone()).map(|name| (*id, name)))
+            .collect()
+    }
+
     /// Art for each of `appids`. Ids are missing from the result only when
     /// Steam couldn't be reached for them.
     pub async fn resolve(&self, http: &reqwest::Client, language: &str, appids: &[u32]) -> HashMap<u32, GameArt> {
@@ -298,7 +321,7 @@ impl ArtResolver {
             let mut guard = self.cache.lock().await;
             let cache = guard.get_or_insert_with(|| self.load());
             for (id, art) in &fetched {
-                cache.insert(*id, Cached { art: art.clone(), at: now });
+                cache.insert(*id, Cached { art: art.clone(), at: now, v: CACHE_VERSION });
             }
             if let Err(e) = self.save(cache) {
                 logbus::debug("art", format!("could not save the art cache: {e:#}"));
@@ -343,6 +366,7 @@ mod tests {
                 header: Some(format!("{CDN}/store_item_assets/steam/apps/440/header.jpg?t=1745368595")),
                 cover: Some(format!("{CDN}/store_item_assets/steam/apps/440/library_600x900.jpg?t=1745368595")),
                 nsfw: Some(false),
+                name: None,
             }
         );
         // appid sent as a string, assets in hashed folders
@@ -391,6 +415,7 @@ mod tests {
         let entry = |icon: Option<&str>, age: i64| Cached {
             art: GameArt { icon: icon.map(String::from), nsfw: Some(false), ..Default::default() },
             at: now - age,
+            v: CACHE_VERSION,
         };
         assert!(is_fresh(&entry(Some("u"), KEEP_EMPTY_SECS + 1), now));
         assert!(!is_fresh(&entry(None, KEEP_EMPTY_SECS + 1), now));
@@ -404,6 +429,26 @@ mod tests {
         assert!(!is_fresh(&old, now));
         let saved: Cached = serde_json::from_value(json!({ "icon": "u", "header": null, "cover": null, "at": now })).unwrap();
         assert_eq!(saved.art.nsfw, None);
+        // saved with the labels but before names were read: looked up again too
+        let labelled: Cached = serde_json::from_value(json!({ "icon": "u", "nsfw": false, "at": now })).unwrap();
+        assert_eq!((labelled.v, labelled.art.name.clone()), (0, None));
+        assert!(!is_fresh(&labelled, now));
+    }
+
+    #[test]
+    fn names_come_with_the_art() {
+        let body = json!({ "response": { "store_items": [
+            { "appid": 1030300, "name": "Hollow Knight: Silksong", "assets": { "community_icon": "a" } },
+            { "appid": 1044720, "name": "  Farthest Frontier " },
+            { "appid": 30, "name": "" },
+            { "appid": 40, "name": 7 },
+            { "id": 50, "success": 15, "appid": 0, "name": "Gone" }
+        ]}});
+        let out = parse_items(CDN, &[1030300, 1044720, 30, 40, 50], &body);
+        assert_eq!(out[&1030300].name.as_deref(), Some("Hollow Knight: Silksong"));
+        assert_eq!(out[&1044720].name.as_deref(), Some("Farthest Frontier"));
+        // blank, not text, or a game the store has nothing on: no name
+        assert_eq!([&out[&30].name, &out[&40].name, &out[&50].name], [&None, &None, &None]);
     }
 
     #[test]
@@ -463,7 +508,7 @@ mod tests {
                         .iter()
                         .map(|&id| {
                             if id < 1000 {
-                                json!({ "appid": id, "assets": {
+                                json!({ "appid": id, "name": format!("Game {id}"), "assets": {
                                     "asset_url_format": format!("steam/apps/{id}/${{FILENAME}}"),
                                     "header": "header.jpg",
                                     "library_capsule": "library_600x900.jpg",
@@ -557,6 +602,7 @@ mod tests {
         });
         std::fs::write(dir.join(CACHE_FILE), aged.to_string()).unwrap();
         let later = ArtResolver::with_endpoints(&dir, "http://127.0.0.1:9", CDN);
+        assert!(later.names(&[1, 2, 3]).await.is_empty());
         let out = later.resolve(&http, "english", &[1, 2, 3]).await;
         assert_eq!(out.len(), 1, "only the game whose content was known");
         assert_eq!((out[&1].nsfw, out[&1].icon.as_deref()), (Some(true), Some("old-icon")));
@@ -565,6 +611,8 @@ mod tests {
         let out = back.resolve(&http, "english", &[1, 2]).await;
         assert_eq!((out[&1].nsfw, out[&2].nsfw), (Some(false), Some(false)));
         assert!(out[&2].icon.as_deref().is_some_and(|u| u.ends_with("icon2.jpg")));
+        // what the store called them is remembered with the rest
+        assert_eq!(back.names(&[1, 2, 77]).await, HashMap::from([(1, "Game 1".to_string()), (2, "Game 2".to_string())]));
 
         // a damaged cache file is ignored rather than fatal
         std::fs::write(dir.join(CACHE_FILE), "{ not json").unwrap();

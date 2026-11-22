@@ -199,6 +199,8 @@ export interface GameArtUrls {
   cover: string | null;
   /** Steam labels the game as adult-only or as frequent nudity or sexual content. */
   nsfw: boolean | null;
+  /** What Steam's store calls the game. The backend uses it to name games listed by number only. */
+  name: string | null;
 }
 
 export interface AchItem {
