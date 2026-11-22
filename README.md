@@ -31,6 +31,7 @@ Download the latest `IdleKit_…_x64-setup.exe` from the [releases page](https:/
 - **Updates itself** – new releases from this repository are offered inside the app. Each one is signed, and the app checks the signature against a key built into it before installing anything.
 - **Game art everywhere** – each game shows its Steam cover in the library (or the wide banner; choose in Settings) and its icon in every list. Art is looked up through Steam's public store API, which needs no key or sign-in. Pictures are fetched three at a time, the ones on screen first, and kept on disk (`%LOCALAPPDATA%\dev.idlekit.app\pictures`), so each is downloaded once and a large library doesn't take over a slow connection. Games without a cover fall back to their banner, then to a tile with the game's name, which is also what a tile shows while its picture is on the way.
 - **Multiple accounts**, three sign-in methods (this PC's Steam client, QR code with the Steam Mobile app, username/password with Steam Guard), online status per account (online/away/invisible/offline), and custom "now playing" text.
+- **Hide NSFW games** – a switch in Settings that leaves games Steam labels “Adult Only Sexual Content” or “Frequent Nudity or Sexual Content” out of every list in the window. They can still idle and farm; `log.txt` still names them.
 - **One bar, not two** – the window has no separate Windows title bar. Minimize, maximize and close sit at the end of IdleKit's own top bar, which is also what the window is dragged by.
 - Graphite, Midnight and Daylight themes with five "running" colors. The interface is set in Inter, the same typeface Steam Game Idler uses by default, bundled with the app so it never loads from the network.
 
@@ -113,6 +114,7 @@ src/                     React UI (Vite, Tailwind 4, zustand)
   lib/mock.ts            sample-data backend for browser preview
   lib/art.ts             which image URLs to try for a game, and the batched art lookup
   lib/pictures.ts        pictures shown from disk; missing ones fetched a few at a time, on-screen first
+  lib/hidden.ts          which games the "Hide NSFW games" setting keeps out of the lists
   components/Desktop.tsx the "update available" bar and the keep-running-or-quit question
   components/WindowBar.tsx the window's own title bar: drag area and the minimize, maximize and close buttons
   pages/                 Library, Idling, Card farming, Achievements, Market, Accounts, Settings, Logs
@@ -126,7 +128,8 @@ src-tauri/src/
   steam/                 cm (direct connection), auth (QR + password), community (badges,
                          licenses, profiles), market, helper (process manager), schema +
                          kv_binary (achievement schema files), local (Steam install detection),
-                         art (icon, cover and banner lookup with a disk cache),
+                         art (icon, cover and banner lookup with a disk cache; also reads
+                         Steam's content labels for "Hide NSFW games"),
                          pictures (the pictures themselves on disk, fetched three at a time)
 src-tauri/helper/        steam-helper: per-game Steamworks process (JSON lines over stdio)
 src-tauri/windows/       hooks.nsh: stops running helpers before the installer copies files
@@ -143,7 +146,7 @@ scripts/                 prepare-helper.mjs (helper build); release-info, build-
 
 What has been tested, and how:
 
-- **Logic:** 56 backend unit tests (badge/licence/profile/inventory/listing parsers, binary KeyValues and achievement schemas, fee math for dollar and other wallets, pricing, farming phases, unlocker ordering, delays and time windows, the game-art lookup with its batching and cache, what the close button does, when to start in the tray, when a playtime boost ends, what the log scrubs and how its file starts over, which settings changed, pictures being fetched once, three at a time and only from Steam's image hosts, changing a list for many games at once) and 10 tests of the release scripts. The UI type-checks, and every UI call matches a registered command.
+- **Logic:** 57 backend unit tests (badge/licence/profile/inventory/listing parsers, binary KeyValues and achievement schemas, fee math for dollar and other wallets, pricing, farming phases, unlocker ordering, delays and time windows, the game-art lookup with its batching and cache, what the close button does, when to start in the tray, when a playtime boost ends, what the log scrubs and how its file starts over, which settings changed, pictures being fetched once, three at a time and only from Steam's image hosts, changing a list for many games at once, which of Steam's content labels hide a game) and 10 tests of the release scripts. The UI type-checks, and every UI call matches a registered command.
 - **The app on Linux**, against a mock Steam install: adding a local account, loading its games, launching `steam-helper` for a game.
 - **Start on launch, on Linux** against a stand-in Steam client that only appears twelve seconds after IdleKit: auto-idle waits, then starts within seconds of Steam being there; with no Steam installed it says so at once.
 - **Tray and startup, on Linux:** the close question, hiding to the tray and coming back from a second launch, the tray menu (driven over D-Bus), the sign-in startup entry being written and removed, starting in the tray, and opening the window after an update.
@@ -151,6 +154,7 @@ What has been tested, and how:
 - **Updater, on Linux against a local update server:** finding a newer version at startup and from the tray menu, accepting a file signed with the release key, and refusing one that was altered after signing.
 - **The log, on Linux** with the window loaded against a stand-in Steam client, two runs in a row: `log.txt` gets a header per run, the wait for Steam, auto-idle starting, the first page coming up and the window's actions, and holds neither the sign-in name, the Steam ID, the profile name nor the user name from folder paths.
 - **Game art**, against `scripts/fake-steam.mjs`: the lookup, the disk cache, covers in hashed folders, and each fallback. With the real app run twice: 24 pictures fetched and kept the first time, none of them fetched again the second, and the account's avatar taken from Steam's own copy on the PC. In the preview with a 486-game library and slow answers: never more than three fetches at once, the tiles on screen always first, and nothing fetched twice.
+- **Hide NSFW games:** in the browser preview, every page with the switch off and on, and with the store slow or unreachable. With the real app on Linux against `scripts/fake-steam.mjs`: labelled games leave the Library, come back with the switch off, stay hidden from what was remembered when the store is down, and with nothing remembered the page says how many games are waiting. A cache written by 0.9 is looked up again. The shape of Steam's real reply was checked by hand for eight games.
 - **The Windows installer, on GitHub's Windows machine:** the app and the helper compile, and the installer is built and signed. Each setup file is checked before it is published: it installs without asking anything; puts the app, the helper and Steam's library in place; creates Start menu and desktop shortcuts; the installed app opens its window with WebView2 running; opening it a second time hands over to the copy already running; the first page comes up in the window; `log.txt` is written without the machine's user or computer name in it and reports no fault in the window or the app; and uninstalling removes all of it.
 
 What has not been tested: anything against live Steam servers or a running Steam client, and these Windows-only parts: Steam's registry keys, the Credential Manager, the tray icon and its menu, starting at sign-in, the check that Steam's process is still there, the market's fee numbers against a real wallet in another currency, where Steam keeps avatars on Windows (`config\avatarcache`), the window's own bar (maximize and restore, resizing by the edges, snapping), and an installed copy updating itself to a newer release. The first things to try on Windows, in this order:

@@ -2,8 +2,10 @@ import { RefreshCw, Search, Tag, Trash } from "lucide-react";
 import { useMemo, useState } from "react";
 import { Button, Callout, Empty, Modal, PageHeader, Pill, Select, Tabs, TextInput, cx, inputClass } from "../components/ui";
 import { api } from "../lib/api";
+import { HiddenNotice } from "../components/HiddenNotice";
 import { US_DOLLAR_WALLET, money, sellerReceives } from "../lib/format";
-import { useActiveAccount, useApp } from "../lib/store";
+import { useAppIds, useHiding } from "../lib/hidden";
+import { useActiveAccount, useApp, useEnsureGames } from "../lib/store";
 import type { Account, InvItem, Listing, PriceInfo, Wallet } from "../lib/types";
 
 type ClassFilter = "all" | InvItem["class"];
@@ -81,6 +83,18 @@ function ProgressBar() {
   );
 }
 
+/** Steam's own app id: gems, sale cards and the like belong to no game. */
+const STEAM_ITSELF = 753;
+
+/**
+ * The game an inventory item comes from. Steam names community items
+ * "<the game's app id>-<item name>"; 0 when the name doesn't say.
+ */
+function gameOf(item: InvItem): number {
+  const id = Number(/^(\d+)-/.exec(item.marketHashName)?.[1] ?? 0);
+  return id === STEAM_ITSELF ? 0 : id;
+}
+
 function Inventory({ account }: { account: Account }) {
   const run = useApp((s) => s.run);
   const settings = useApp((s) => s.settings)!;
@@ -107,15 +121,20 @@ function Inventory({ account }: { account: Account }) {
     setLoading(false);
   };
 
+  // "Hide NSFW games" goes by the game each item comes from.
+  const itemGames = useMemo(() => items?.map(gameOf).filter((id) => id > 0), [items]);
+  const hiding = useHiding(itemGames);
+
   const shown = useMemo(() => {
     const q = query.trim().toLowerCase();
     return (items ?? []).filter(
       (i) =>
         i.marketable &&
+        !(gameOf(i) > 0 && hiding.hides(gameOf(i))) &&
         (filter === "all" || i.class === filter) &&
         (!q || i.name.toLowerCase().includes(q) || i.game.toLowerCase().includes(q)),
     );
-  }, [items, filter, query]);
+  }, [items, filter, query, hiding]);
 
   const unmarketable = (items ?? []).filter((i) => !i.marketable).length;
   const qtyOf = (i: InvItem) => qty[i.marketHashName] ?? i.count;
@@ -212,6 +231,8 @@ function Inventory({ account }: { account: Account }) {
           </Button>
         </div>
       </div>
+
+      <HiddenNotice hiding={hiding} />
 
       {shown.length === 0 ? (
         <Empty title="Nothing to sell here" body="No marketable items match this filter." />
@@ -369,7 +390,19 @@ function Inventory({ account }: { account: Account }) {
 
 function Listings({ account }: { account: Account }) {
   const run = useApp((s) => s.run);
-  const [list, setList] = useState<Listing[] | null>(null);
+  const [all, setList] = useState<Listing[] | null>(null);
+  // A listing only names its game ("<game> Trading Card"), so "Hide NSFW
+  // games" goes by the names of the games in the library that it hides.
+  useEnsureGames(account.steamId);
+  const games = useApp((s) => s.games[account.steamId]);
+  const hiding = useHiding(useAppIds(games));
+  const list = useMemo(() => {
+    if (!all || !hiding.on) return all;
+    // Until the library is known, there is no telling which listings to hide.
+    if (!games) return [];
+    const names = games.filter((g) => hiding.hides(g.appid) && g.name.trim()).map((g) => g.name.trim().toLowerCase());
+    return all.filter((l) => !names.some((name) => l.game.toLowerCase().startsWith(name)));
+  }, [all, games, hiding]);
   const [loading, setLoading] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [busy, setBusy] = useState(false);
@@ -429,6 +462,7 @@ function Listings({ account }: { account: Account }) {
           </Button>
         </div>
       </div>
+      <HiddenNotice hiding={hiding} />
       {list.length === 0 ? (
         <Empty title="Nothing listed" body="Items you list from the Inventory tab show up here." />
       ) : (

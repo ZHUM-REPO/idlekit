@@ -20,6 +20,8 @@ import {
 } from "../components/ui";
 import { api, errorText } from "../lib/api";
 import { dateText, until } from "../lib/format";
+import { HiddenNotice } from "../components/HiddenNotice";
+import { useAppIds, useHiding } from "../lib/hidden";
 import { useNow } from "../lib/hooks";
 import { useActiveAccount, useApp, useEnsureGames } from "../lib/store";
 import type { AchItem, AchView, Account, GameEntry, StatItem } from "../lib/types";
@@ -71,16 +73,18 @@ function Manager({ account }: { account: Account }) {
   const go = useApp((s) => s.go);
   const [query, setQuery] = useState("");
   useEnsureGames(account.steamId);
+  const hiding = useHiding(useAppIds(games));
 
   const list = useMemo(() => {
     const q = query.trim().toLowerCase();
     const fav = new Set(account.favorites);
     return (games ?? [])
-      .filter((g) => !q || g.name.toLowerCase().includes(q) || String(g.appid) === q)
+      .filter((g) => !hiding.hides(g.appid) && (!q || g.name.toLowerCase().includes(q) || String(g.appid) === q))
       .sort((a, b) => Number(fav.has(b.appid)) - Number(fav.has(a.appid)) || a.name.localeCompare(b.name));
-  }, [games, query, account.favorites]);
+  }, [games, query, account.favorites, hiding]);
 
-  const selected = games?.find((g) => g.appid === achAppid) ?? null;
+  // A hidden game is not opened either, however this page was reached.
+  const selected = games?.find((g) => g.appid === achAppid && !hiding.hides(g.appid)) ?? null;
 
   return (
     <div className="grid gap-5 lg:grid-cols-[280px_minmax(0,1fr)]">
@@ -115,8 +119,11 @@ function Manager({ account }: { account: Account }) {
               </button>
             </li>
           ))}
-          {games && list.length === 0 && <li className="px-3 py-3 text-muted">No games match.</li>}
+          {games && list.length === 0 && hiding.checking + hiding.unanswered === 0 && (
+            <li className="px-3 py-3 text-muted">No games match.</li>
+          )}
         </ul>
+        <HiddenNotice hiding={hiding} className="border-t border-line p-2.5 text-[13px] text-muted" />
       </div>
       {selected ? (
         <GamePanel key={selected.appid} account={account} game={selected} />
@@ -597,7 +604,14 @@ function Unlocker({ account, running }: { account: Account; running: boolean }) 
   const us = settings.unlocker;
   const nameOf = (appid: number) => games?.find((g) => g.appid === appid)?.name ?? `App ${appid}`;
   const statusOf = (appid: number) => status?.games.find((g) => g.appid === appid);
-  const queue = Array.from(new Set([...account.unlockQueue, ...(running ? (status?.games.map((g) => g.appid) ?? []) : [])]));
+  const statusGames = status?.games;
+  const queue = useMemo(
+    () => Array.from(new Set([...account.unlockQueue, ...(running ? (statusGames?.map((g) => g.appid) ?? []) : [])])),
+    [account.unlockQueue, running, statusGames],
+  );
+  // "Hide NSFW games": hidden games stay in the queue and are worked on, unseen.
+  const hiding = useHiding(queue);
+  const unseen = queue.filter((appid) => hiding.hides(appid)).length;
   const next = status?.games.filter((g) => g.nextAt > now).sort((a, b) => a.nextAt - b.nextAt)[0];
 
   const orderLabel = { common: "most common first", rare: "rarest first", schema: "in the game's own order" }[us.order];
@@ -619,7 +633,13 @@ function Unlocker({ account, running }: { account: Account; running: boolean }) 
             {running && next ? (
               <>
                 <div className="text-[15px]">
-                  Next: <span className="font-medium">{next.nextName}</span> in {next.name}
+                  {hiding.hides(next.appid) ? (
+                    "Next: an achievement in a game that isn't shown"
+                  ) : (
+                    <>
+                      Next: <span className="font-medium">{next.nextName}</span> in {next.name}
+                    </>
+                  )}
                 </div>
                 <div className="heading num mt-0.5 text-[24px] text-ink">{until(next.nextAt, now)}</div>
               </>
@@ -668,14 +688,20 @@ function Unlocker({ account, running }: { account: Account; running: boolean }) 
         </div>
       </Section>
 
+      <HiddenNotice hiding={hiding} className="text-[13px] text-muted" />
+
       {queue.length === 0 ? (
         <Empty
           title="The unlock queue is empty"
           body="Open a game in the Manager tab and choose Add to unlock queue. Games are unlocked in the order you add them."
         />
+      ) : unseen === queue.length ? (
+        <p className="text-muted">
+          <span className="num text-ink">{unseen}</span> {unseen === 1 ? "game" : "games"} in the queue, not shown here.
+        </p>
       ) : (
         <div className="overflow-hidden rounded-xl border border-line bg-panel">
-          {queue.map((appid, i) => {
+          {queue.filter((appid) => !hiding.hides(appid)).map((appid, i) => {
             const st = statusOf(appid);
             const imported = account.unlockImported[String(appid)]?.length ?? 0;
             const custom = account.unlockOrder[String(appid)]?.length ?? 0;
@@ -724,6 +750,8 @@ function Unlocker({ account, running }: { account: Account; running: boolean }) 
           })}
         </div>
       )}
+
+      {unseen > 0 && unseen < queue.length && <p className="-mt-2 text-[13px] text-muted">And {unseen} more in the queue, not shown.</p>}
 
       {customize !== null && (
         <CustomizeModal account={account} appid={customize} name={nameOf(customize)} onClose={() => setCustomize(null)} />

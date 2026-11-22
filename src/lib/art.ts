@@ -50,6 +50,14 @@ export function requestArt(appid: number) {
   if (!draining && timer === null) timer = setTimeout(() => void drain(), 30);
 }
 
+/** Ask again now for games whose lookup failed, without waiting out the pause after a failure. */
+export function retryArt(appids: readonly number[]) {
+  for (const id of appids) {
+    if (useArtStore.getState().byApp[id] === null) retryAt.delete(id);
+    requestArt(id);
+  }
+}
+
 async function drain() {
   timer = null;
   draining = true;

@@ -105,6 +105,9 @@ pub struct Settings {
     pub accent: String,
     /// Library cards: "cover" (portrait art) | "banner" (wide art).
     pub card_style: String,
+    /// Leave games Steam labels as adult-only or as frequent nudity or sexual
+    /// content out of every list in the window. They can still idle and farm.
+    pub hide_nsfw: bool,
     pub language: String,
     pub max_idle_games: u32,
     /// Shown as a "non-Steam game" while idling over a direct connection (empty = off).
@@ -131,6 +134,7 @@ impl Default for Settings {
             theme: "graphite".into(),
             accent: "amber".into(),
             card_style: "cover".into(),
+            hide_nsfw: false,
             language: "english".into(),
             max_idle_games: 32,
             idle_status_text: String::new(),

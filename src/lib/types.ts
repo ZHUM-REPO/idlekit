@@ -37,6 +37,8 @@ export interface Settings {
   accent: "amber" | "cyan" | "lime" | "rose" | "violet";
   /** Library cards: portrait cover art, or the wide banner. */
   cardStyle: "cover" | "banner";
+  /** Keep games Steam labels as adult-only or as frequent nudity or sexual content out of every list. */
+  hideNsfw: boolean;
   language: string;
   maxIdleGames: number;
   idleStatusText: string;
@@ -195,6 +197,8 @@ export interface GameArtUrls {
   icon: string | null;
   header: string | null;
   cover: string | null;
+  /** Steam labels the game as adult-only or as frequent nudity or sexual content. */
+  nsfw: boolean | null;
 }
 
 export interface AchItem {

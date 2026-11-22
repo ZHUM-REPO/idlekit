@@ -1,6 +1,6 @@
 [package]
 name = "idlekit"
-version = "0.9.0"
+version = "1.0.0"
 description = "Steam idler: card farming, achievement manager, playtime booster and market seller"
 edition = "2021"
 default-run = "idlekit"

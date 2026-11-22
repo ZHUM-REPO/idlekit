@@ -26,6 +26,9 @@ type Cb = (payload: unknown) => void;
 const ME = "76561198012345678";
 const ALT = "76561198087654321";
 
+/** A made-up game that the sample store labels as adult-only, for trying "Hide NSFW games". */
+const ADULT_SAMPLE = 99900010;
+
 const GAMES: [number, string, number][] = [
   [730, "Counter-Strike 2", 51234],
   [570, "Dota 2", 10500],
@@ -52,12 +55,14 @@ const GAMES: [number, string, number][] = [
   [1091500, "Cyberpunk 2077", 3900],
   [1966720, "Lethal Company", 95],
   [1868140, "Dave the Diver", 30],
+  [ADULT_SAMPLE, "Sample Adults-Only Game", 410],
 ];
 
 const defaultSettings: Settings = {
   theme: "graphite",
   accent: "amber",
   cardStyle: "cover",
+  hideNsfw: false,
   language: "english",
   maxIdleGames: 32,
   idleStatusText: "",
@@ -144,6 +149,13 @@ export function createMock() {
   if (params.get("theme")) settings.theme = params.get("theme") as Settings["theme"];
   if (params.get("accent")) settings.accent = params.get("accent") as Settings["accent"];
   if (params.get("cards")) settings.cardStyle = params.get("cards") as Settings["cardStyle"];
+  // `?hide=1` starts with "Hide NSFW games" on. `?nsfw=<appid>,<appid>` says
+  // which sample games carry Steam's label (default: the one made-up sample).
+  // `?content=down` leaves the content lookup unanswered, as when Steam can't
+  // be reached; `?content=slow` answers it after a few seconds.
+  if (params.get("hide") === "1") settings.hideNsfw = true;
+  const labelled = new Set((params.get("nsfw") ?? String(ADULT_SAMPLE)).split(",").map(Number));
+  const contentLookup = params.get("content");
   // `?art=<url>` points looked-up art at a server laid out like Steam's image
   // hosts, for working on the UI offline. Without it the lookup "fails", as it
   // would with Steam unreachable, and the UI falls back to guessable URLs.
@@ -158,11 +170,11 @@ export function createMock() {
   const updateDemo = params.get("update");
   const update: UpdateState = {
     configured: updateDemo !== "off",
-    current: "0.9",
+    current: "1.0",
     phase: updateDemo === "downloading" ? "downloading" : "idle",
     available:
       updateDemo && updateDemo !== "off"
-        ? { version: "1.0", notes: "A sample release, for previewing how updates look." }
+        ? { version: "1.1", notes: "A sample release, for previewing how updates look." }
         : null,
     checkedAt: now - 4 * 60_000,
     error: updateDemo === "error" ? "Couldn't install the update: the connection was lost" : null,
@@ -281,7 +293,7 @@ export function createMock() {
   };
 
   const logs: LogLine[] = [
-    { ts: now - 3 * 3600_000, level: "info", scope: "app", message: "IdleKit 0.9 started" },
+    { ts: now - 3 * 3600_000, level: "info", scope: "app", message: "IdleKit 1.0 started" },
     { ts: now - 3 * 3600_000 + 2000, level: "info", scope: "direct", message: `${ALT} connected to Steam` },
     { ts: now - 3 * 3600_000 + 5000, level: "info", scope: "idle", message: "2 game(s) idling (auto)" },
     { ts: now - 2 * 3600_000, level: "info", scope: "farming", message: "Phase 1: building playtime on 3 game(s) under 2h" },
@@ -301,9 +313,11 @@ export function createMock() {
     ["Baldur's Gate 3", "emoticon", ":owlbear:", 2],
     ["Hades", "background", "House of Hades", 1],
     ["Celeste", "booster", "Celeste Booster Pack", 1],
+    ["Sample Adults-Only Game", "card", "Sample Adults-Only Card", 2],
     ["", "gems", "Gems", 1],
   ].map(([game, cls, name, count], i) => ({
-    marketHashName: `${100000 + i}-${name}`,
+    // As Steam names them: the game's app id, then the item (753 is Steam itself).
+    marketHashName: `${cls === "gems" ? 753 : (GAMES.find((g) => g[1] === game)?.[0] ?? 100000 + i)}-${name}`,
     name: name as string,
     itemType: cls === "gems" ? "Steam Gems" : `${game} ${cls === "foil" ? "Foil Trading Card" : cls === "card" ? "Trading Card" : cls}`,
     class: cls as InvItem["class"],
@@ -318,6 +332,7 @@ export function createMock() {
     { listingId: "4422001", name: "Shadowheart", game: "Baldur's Gate 3 Trading Card", priceText: "$0.12 ($0.10)", status: "active" },
     { listingId: "4422002", name: "Troll", game: "Valheim Trading Card", priceText: "$0.09 ($0.07)", status: "active" },
     { listingId: "4422003", name: "Harry", game: "Disco Elysium Trading Card", priceText: "$0.14 ($0.12)", status: "pending" },
+    { listingId: "4422004", name: "Sample Adults-Only Card", game: "Sample Adults-Only Game Trading Card", priceText: "$0.05 ($0.03)", status: "active" },
   ];
 
   const achievements = (appid: number): AchView => {
@@ -355,7 +370,7 @@ export function createMock() {
 
   const handlers: Record<string, (a: Record<string, any>) => unknown | Promise<unknown>> = {
     get_bootstrap: (): Bootstrap => ({
-      version: "0.9",
+      version: "1.0",
       dataDir: "C:\\Users\\you\\AppData\\Roaming\\dev.idlekit.app",
       settings,
       accounts: accounts.map(view),
@@ -507,16 +522,18 @@ export function createMock() {
       return null;
     },
     resolve_game_art: async ({ appids }) => {
-      if (!artBase) return {};
-      await delay(120);
+      if (contentLookup === "down") return {};
+      await delay(contentLookup === "slow" ? 4000 : 120);
       const apps = `${artBase}/store_item_assets/steam/apps`;
       return Object.fromEntries(
         (appids as number[]).map((id) => [
           id,
           {
-            icon: `${artBase}/community_assets/images/apps/${id}/icon.jpg`,
-            header: `${apps}/${id}/header.jpg`,
-            cover: `${apps}/${id}/library_600x900.jpg`,
+            // Without `?art=`, no picture addresses: the UI falls back to guessable URLs.
+            icon: artBase ? `${artBase}/community_assets/images/apps/${id}/icon.jpg` : null,
+            header: artBase ? `${apps}/${id}/header.jpg` : null,
+            cover: artBase ? `${apps}/${id}/library_600x900.jpg` : null,
+            nsfw: labelled.has(id),
           },
         ]),
       );

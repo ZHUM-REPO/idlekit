@@ -1,10 +1,12 @@
 import { Play, Square, X } from "lucide-react";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { GameArt, GameIcon } from "../components/GameArt";
 import { Odometer } from "../components/Odometer";
 import { Button, Empty, PageHeader, Pill, Section, Switch, cx } from "../components/ui";
 import { api } from "../lib/api";
 import { clock } from "../lib/format";
+import { HiddenNotice } from "../components/HiddenNotice";
+import { useHiding } from "../lib/hidden";
 import { useNow } from "../lib/hooks";
 import { EMPTY, useActiveAccount, useApp, useEnsureGames } from "../lib/store";
 import type { IdleGame } from "../lib/types";
@@ -28,13 +30,19 @@ export function IdlingPage() {
   const now = useNow(1000, idle.length > 0);
   const [busy, setBusy] = useState<string | null>(null);
   useEnsureGames(account?.steamId);
+  // "Hide NSFW games" covers both lists on this page.
+  const autoIdle = account?.autoIdle;
+  const listedIds = useMemo(() => [...idle.map((g) => g.appid), ...(autoIdle ?? [])], [idle, autoIdle]);
+  const hiding = useHiding(listedIds);
 
   if (!account || !settings) return null;
 
   const nameOf = (appid: number) =>
     games?.find((g) => g.appid === appid)?.name ?? idle.find((g) => g.appid === appid)?.name ?? `App ${appid}`;
-  const sorted = [...idle].sort((a, b) => a.startedAt - b.startedAt);
+  const sorted = idle.filter((g) => !hiding.hides(g.appid)).sort((a, b) => a.startedAt - b.startedAt);
+  const unseen = idle.length - sorted.length;
   const total = sorted.reduce((sum, g) => sum + (now - g.startedAt), 0);
+  const autoIdleShown = account.autoIdle.filter((appid) => !hiding.hides(appid));
 
   return (
     <div className="pb-10">
@@ -78,17 +86,24 @@ export function IdlingPage() {
         }
       />
 
-      {sorted.length === 0 ? (
+      <HiddenNotice hiding={hiding} />
+
+      {idle.length === 0 ? (
         <Empty
           title="Nothing is idling"
           body="Pick games in your library and choose Idle, or start your auto-idle list. Card farming and the achievement unlocker start games here on their own."
           action={<Button onClick={() => go("library")}>Open library</Button>}
         />
+      ) : sorted.length === 0 ? (
+        <p className="mb-3 text-muted">
+          <span className="num text-ink">{unseen}</span> {unseen === 1 ? "game is" : "games are"} running, not shown here.
+        </p>
       ) : (
         <>
           <p className="mb-3 text-muted">
             <span className="num text-ink">{sorted.length}</span> {sorted.length === 1 ? "game" : "games"} running,{" "}
             <span className="num text-ink">{clock(total)}</span> of playtime this session
+            {unseen > 0 && <>, and {unseen} more not shown</>}
           </p>
           <div className="overflow-hidden rounded-xl border border-line bg-panel">
             {sorted.map((g, i) => (
@@ -118,13 +133,15 @@ export function IdlingPage() {
             </label>
           }
         >
-          {account.autoIdle.length === 0 ? (
+          {autoIdleShown.length === 0 ? (
             <p className="px-4 py-4 text-muted">
-              Games you add here (from a game's menu in the library) can be started together with one click.
+              {account.autoIdle.length === 0
+                ? "Games you add here (from a game's menu in the library) can be started together with one click."
+                : `${account.autoIdle.length} on this list, not shown here.`}
             </p>
           ) : (
             <ul className="divide-y divide-line">
-              {account.autoIdle.map((appid) => (
+              {autoIdleShown.map((appid) => (
                 <li key={appid} className="flex items-center gap-3 px-4 py-2">
                   <GameIcon appid={appid} name={nameOf(appid)} size={24} />
                   <span className="flex-1 truncate">{nameOf(appid)}</span>

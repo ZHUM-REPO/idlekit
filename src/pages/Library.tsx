@@ -1,10 +1,12 @@
 import { Check, Ellipsis, Play, Plus, RefreshCw, Search, Square, Star, Trophy } from "lucide-react";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { GameArt } from "../components/GameArt";
+import { HiddenNotice } from "../components/HiddenNotice";
 import { Button, Callout, Empty, Field, IconButton, Modal, NumberInput, PageHeader, Select, TextInput, cx } from "../components/ui";
 import { api } from "../lib/api";
 import { clock, hoursText } from "../lib/format";
 import { useNow } from "../lib/hooks";
+import { useAppIds, useHiding } from "../lib/hidden";
 import { EMPTY, useActiveAccount, useApp } from "../lib/store";
 import type { Account, GameEntry, IdleGame } from "../lib/types";
 
@@ -38,14 +40,20 @@ export function LibraryPage() {
   }, [account?.steamId]);
 
   const idleMap = useMemo(() => new Map(idle.map((g) => [g.appid, g])), [idle]);
+  // "Hide NSFW games": what stays out of the grid, the count and the selection.
+  const hiding = useHiding(useAppIds(games));
+  const listed = useMemo(() => (games && hiding.on ? games.filter((g) => !hiding.hides(g.appid)) : games), [games, hiding]);
+  useEffect(() => {
+    if (hiding.on) setSelected(new Set());
+  }, [hiding.on]);
   const favorites = account?.favorites;
   const favSet = useMemo(() => new Set(favorites ?? []), [favorites]);
   const steamId = account?.steamId;
 
   const shown = useMemo(() => {
-    if (!games) return [];
+    if (!listed) return [];
     const q = query.trim().toLowerCase();
-    let list = games.filter((g) => {
+    let list = listed.filter((g) => {
       if (q && !g.name.toLowerCase().includes(q) && String(g.appid) !== q) return false;
       if (filter === "favorites") return favSet.has(g.appid);
       if (filter === "unplayed") return g.playtimeMinutes === 0;
@@ -60,7 +68,7 @@ export function LibraryPage() {
       list = [...list.filter((g) => favSet.has(g.appid)), ...list.filter((g) => !favSet.has(g.appid))];
     }
     return list;
-  }, [games, favSet, query, filter, sort, idleMap]);
+  }, [listed, favSet, query, filter, sort, idleMap]);
 
   // What a tile is given stays the same from one draw to the next, so a tile
   // is only drawn again when something about that game changed.
@@ -116,8 +124,8 @@ export function LibraryPage() {
       <PageHeader
         title="Library"
         sub={
-          games
-            ? `${games.length.toLocaleString()} games on ${account.personaName || account.accountName}`
+          listed
+            ? `${listed.length.toLocaleString()} games on ${account.personaName || account.accountName}`
             : "Loading your games…"
         }
         actions={
@@ -194,7 +202,9 @@ export function LibraryPage() {
         </div>
       )}
 
-      {games && shown.length === 0 && !error && (
+      <HiddenNotice hiding={hiding} />
+
+      {games && shown.length === 0 && !error && !(hiding.checking + hiding.unanswered > 0 && listed?.length === 0) && (
         <Empty
           title={query || filter !== "all" ? "No games match" : "No games yet"}
           body={

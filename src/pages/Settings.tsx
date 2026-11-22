@@ -99,6 +99,13 @@ export function SettingsPage() {
               ))}
             </div>
           </Field>
+          <Field
+            inline
+            label="Hide NSFW games"
+            hint="Leaves games that Steam labels “Adult Only Sexual Content” or “Frequent Nudity or Sexual Content” out of every list here. They still idle and farm if they are set to, and log.txt still names them."
+          >
+            <Switch label="Hide NSFW games" checked={s.hideNsfw} onChange={(v) => void save({ hideNsfw: v })} />
+          </Field>
           <Field inline label="Running color" hint="Marks anything that is currently running.">
             <div className="flex gap-2">
               {ACCENTS.map((a) => (

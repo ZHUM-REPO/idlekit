@@ -2,7 +2,8 @@ import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { Button, PageHeader, Select, TextInput, cx } from "../components/ui";
 import { api } from "../lib/api";
 import { timeOfDay } from "../lib/format";
-import { useApp } from "../lib/store";
+import { useAppIds, useHiding } from "../lib/hidden";
+import { useActiveAccount, useApp, useEnsureGames } from "../lib/store";
 import type { LogLine } from "../lib/types";
 
 /**
@@ -35,14 +36,36 @@ export function LogsPage() {
   const [query, setQuery] = useState("");
   const end = useRef<HTMLDivElement>(null);
 
+  // "Hide NSFW games": lines that name a hidden game are left out of this
+  // list. The file keeps them, and the note under the list says so.
+  const account = useActiveAccount();
+  useEnsureGames(account?.steamId);
+  const games = useApp((s) => (account ? s.games[account.steamId] : undefined));
+  const hiding = useHiding(useAppIds(games));
+  const hiddenNames = useMemo(
+    () =>
+      hiding.on && games
+        ? games.filter((g) => hiding.hides(g.appid)).map((g) => g.name.trim().toLowerCase()).filter((name) => name.length >= 3)
+        : [],
+    [games, hiding],
+  );
+  const visible = useMemo(() => {
+    if (hiddenNames.length === 0) return logs;
+    return logs.filter((l) => {
+      const text = l.message.toLowerCase();
+      return !hiddenNames.some((name) => text.includes(name));
+    });
+  }, [logs, hiddenNames]);
+  const leftOut = logs.length - visible.length;
+
   const shown = useMemo(() => {
     const q = query.trim().toLowerCase();
-    return logs.filter((l) => {
+    return visible.filter((l) => {
       if (level === "problems" && l.level !== "warn" && l.level !== "error") return false;
       if (level === "all" && l.level === "debug") return false;
       return !q || l.message.toLowerCase().includes(q) || l.scope.includes(q);
     });
-  }, [logs, level, query]);
+  }, [visible, level, query]);
 
   // Follows the newest line. The count alone can't tell: once the list is
   // full, a new line pushes the oldest out and the count stays the same.
@@ -98,6 +121,7 @@ export function LogsPage() {
         {logFile
           ? `This list is this session. The same lines, from earlier sessions too, are kept in ${logFile}.`
           : "This list is this session only: the log file couldn't be opened."}
+        {leftOut > 0 && ` ${leftOut} ${leftOut === 1 ? "line that names a hidden game is" : "lines that name hidden games are"} left out here.`}
       </p>
     </div>
   );

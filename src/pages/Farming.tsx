@@ -5,8 +5,10 @@ import { Odometer } from "../components/Odometer";
 import { Button, Callout, Empty, PageHeader, Pill, Section, Switch, cx, type Tone } from "../components/ui";
 import { api } from "../lib/api";
 import { hoursFromFloat, until } from "../lib/format";
+import { HiddenNotice } from "../components/HiddenNotice";
+import { useAppIds, useHiding } from "../lib/hidden";
 import { useNow } from "../lib/hooks";
-import { useActiveAccount, useApp, useEnsureGames } from "../lib/store";
+import { EMPTY, useActiveAccount, useApp, useEnsureGames } from "../lib/store";
 import type { FarmGame } from "../lib/types";
 
 const STATUS: Record<FarmGame["status"], { label: string; tone: Tone }> = {
@@ -27,11 +29,15 @@ export function FarmingPage() {
   const [preview, setPreview] = useState<FarmGame[] | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   useEnsureGames(account?.steamId);
+  const running = !!status?.running;
+  const games = running || !preview ? (status?.games ?? preview ?? EMPTY) : preview;
+  // "Hide NSFW games": the totals still count every game, the table leaves these out.
+  const hiding = useHiding(useAppIds(games));
 
   if (!account || !settings) return null;
   const fs = settings.farming;
-  const running = !!status?.running;
-  const games = running || !preview ? (status?.games ?? preview ?? []) : preview;
+  const rows = games.filter((g) => !hiding.hides(g.appid));
+  const unseen = games.length - rows.length;
   const counted = games.filter((g) => g.status !== "skipped" && g.status !== "error");
   const dropsLeft = running ? status!.totalDrops : counted.reduce((n, g) => n + g.dropsRemaining, 0);
   const noWeb = !account.hasToken && !account.hasCookie;
@@ -179,6 +185,8 @@ export function FarmingPage() {
         </div>
       </Section>
 
+      <HiddenNotice hiding={hiding} />
+
       {games.length === 0 ? (
         !noWeb && (
           <Empty
@@ -190,7 +198,12 @@ export function FarmingPage() {
             }
           />
         )
+      ) : rows.length === 0 ? (
+        <p className="text-muted">
+          <span className="num text-ink">{unseen}</span> {unseen === 1 ? "game" : "games"} with card drops, not shown here.
+        </p>
       ) : (
+        <>
         <div className="overflow-x-auto rounded-xl border border-line bg-panel">
           <table className="w-full text-left text-[13px]">
             <thead className="border-b border-line text-[12px] text-faint [&_th]:whitespace-nowrap">
@@ -203,7 +216,7 @@ export function FarmingPage() {
               </tr>
             </thead>
             <tbody>
-              {games.map((g) => {
+              {rows.map((g) => {
                 const blacklisted = account.farmBlacklist.includes(g.appid);
                 return (
                   <tr key={g.appid} className="border-t border-line first:border-t-0">
@@ -236,6 +249,8 @@ export function FarmingPage() {
             </tbody>
           </table>
         </div>
+        {unseen > 0 && <p className="mt-2 text-[13px] text-muted">And {unseen} more not shown.</p>}
+        </>
       )}
     </div>
   );

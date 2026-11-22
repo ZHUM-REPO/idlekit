@@ -8,6 +8,9 @@
 //! banner and cover from hashed folders too. Art rarely changes, so results are
 //! cached on disk. Ids Steam couldn't be reached for are left out of the reply;
 //! the UI then falls back to the guessable URLs and asks again later.
+//!
+//! The same reply says what kind of content a game has, which is what the
+//! "Hide NSFW games" setting goes by.
 use crate::logbus;
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
@@ -33,6 +36,11 @@ const KEEP_EMPTY_SECS: i64 = 3 * DAY;
 /// A failed lookup is reported as a warning this often at most; in between it
 /// only goes to the debug log, so being offline doesn't fill the Logs page.
 const WARN_EVERY_SECS: i64 = 30 * 60;
+/// Steam's content labels that make a game one to hide: "Adult Only Sexual
+/// Content" and "Frequent Nudity or Sexual Content". The others ("Some Nudity
+/// or Sexual Content" 1, "Frequent Violence or Gore" 2, "General Mature
+/// Content" 5) cover a large share of ordinary games and are left alone.
+const NSFW_DESCRIPTORS: [u64; 2] = [3, 4];
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
 #[serde(rename_all = "camelCase", default)]
@@ -43,6 +51,9 @@ pub struct GameArt {
     pub header: Option<String>,
     /// The 600x900 portrait cover ("library capsule").
     pub cover: Option<String>,
+    /// Whether Steam labels the game as adult-only or as frequent nudity or
+    /// sexual content. `None` only in entries saved before this was read.
+    pub nsfw: Option<bool>,
 }
 
 impl GameArt {
@@ -60,6 +71,10 @@ struct Cached {
 }
 
 fn is_fresh(entry: &Cached, now: i64) -> bool {
+    // Saved by a version that didn't read the content labels: look it up again.
+    if entry.art.nsfw.is_none() {
+        return false;
+    }
     let keep = if entry.art.is_empty() { KEEP_EMPTY_SECS } else { KEEP_FOUND_SECS };
     // An entry stamped in the future means the clock moved; look it up again.
     entry.at <= now + DAY && now - entry.at < keep
@@ -93,7 +108,15 @@ fn art_from_assets(cdn: &str, appid: u32, assets: &Value) -> GameArt {
         icon: text("community_icon").map(|hash| icon_url(cdn, appid, hash)),
         header: asset(text("header")),
         cover: asset(text("library_capsule").or_else(|| text("library_capsule_2x"))),
+        nsfw: None,
     }
+}
+
+/// Whether a store item carries one of the content labels that hide a game.
+fn is_nsfw(item: &Value) -> bool {
+    item.get("content_descriptorids")
+        .and_then(Value::as_array)
+        .is_some_and(|ids| ids.iter().filter_map(Value::as_u64).any(|id| NSFW_DESCRIPTORS.contains(&id)))
 }
 
 fn as_appid(v: Option<&Value>) -> Option<u32> {
@@ -108,14 +131,19 @@ fn as_appid(v: Option<&Value>) -> Option<u32> {
 /// Turn a `GetItems` reply into art for every requested id. Ids the reply has
 /// nothing for (delisted or unknown apps come back with `appid` zeroed) get an
 /// empty entry, so they're remembered instead of being looked up on every render.
+/// Every entry says whether the game is one to hide; a game Steam's store has
+/// nothing on is not.
 pub fn parse_items(cdn: &str, requested: &[u32], body: &Value) -> HashMap<u32, GameArt> {
-    let mut out: HashMap<u32, GameArt> = requested.iter().map(|id| (*id, GameArt::default())).collect();
+    let answered = GameArt { nsfw: Some(false), ..GameArt::default() };
+    let mut out: HashMap<u32, GameArt> = requested.iter().map(|id| (*id, answered.clone())).collect();
     let items = body.pointer("/response/store_items").and_then(Value::as_array);
     for item in items.into_iter().flatten() {
         let Some(appid) = as_appid(item.get("appid")) else { continue };
-        if let (Some(slot), Some(assets)) = (out.get_mut(&appid), item.get("assets")) {
+        let Some(slot) = out.get_mut(&appid) else { continue };
+        if let Some(assets) = item.get("assets") {
             *slot = art_from_assets(cdn, appid, assets);
         }
+        slot.nsfw = Some(is_nsfw(item));
     }
     out
 }
@@ -217,6 +245,9 @@ impl ArtResolver {
 
         let mut found = HashMap::with_capacity(wanted.len());
         let mut missing = Vec::new();
+        // What was known before it went out of date: better than nothing if
+        // Steam can't be reached now, above all for which games to hide.
+        let mut outdated: HashMap<u32, GameArt> = HashMap::new();
         {
             let mut guard = self.cache.lock().await;
             let cache = guard.get_or_insert_with(|| self.load());
@@ -225,7 +256,12 @@ impl ArtResolver {
                     Some(entry) if is_fresh(entry, now) => {
                         found.insert(*id, entry.art.clone());
                     }
-                    _ => missing.push(*id),
+                    other => {
+                        if let Some(entry) = other.filter(|e| e.art.nsfw.is_some()) {
+                            outdated.insert(*id, entry.art.clone());
+                        }
+                        missing.push(*id);
+                    }
                 }
             }
         }
@@ -251,7 +287,10 @@ impl ArtResolver {
                 }
             }
         }
+        // Games Steam didn't answer for keep their earlier answer, if there is one.
+        outdated.retain(|id, _| !fetched.contains_key(id));
         if fetched.is_empty() {
+            found.extend(outdated);
             return found;
         }
 
@@ -266,6 +305,7 @@ impl ArtResolver {
             }
         }
         found.extend(fetched);
+        found.extend(outdated);
         found
     }
 }
@@ -302,6 +342,7 @@ mod tests {
                 icon: Some(format!("{CDN}/community_assets/images/apps/440/e3f595a92552da3d664ad00277fad2107345f743.jpg")),
                 header: Some(format!("{CDN}/store_item_assets/steam/apps/440/header.jpg?t=1745368595")),
                 cover: Some(format!("{CDN}/store_item_assets/steam/apps/440/library_600x900.jpg?t=1745368595")),
+                nsfw: Some(false),
             }
         );
         // appid sent as a string, assets in hashed folders
@@ -348,7 +389,7 @@ mod tests {
     fn empty_results_expire_sooner() {
         let now = 100 * DAY;
         let entry = |icon: Option<&str>, age: i64| Cached {
-            art: GameArt { icon: icon.map(String::from), ..Default::default() },
+            art: GameArt { icon: icon.map(String::from), nsfw: Some(false), ..Default::default() },
             at: now - age,
         };
         assert!(is_fresh(&entry(Some("u"), KEEP_EMPTY_SECS + 1), now));
@@ -357,6 +398,37 @@ mod tests {
         assert!(!is_fresh(&entry(Some("u"), KEEP_FOUND_SECS + 1), now));
         // stamped far in the future (clock changed): not trusted
         assert!(!is_fresh(&entry(Some("u"), -3 * DAY), now));
+        // saved before content labels were read: looked up again, however new
+        let mut old = entry(Some("u"), 60);
+        old.art.nsfw = None;
+        assert!(!is_fresh(&old, now));
+        let saved: Cached = serde_json::from_value(json!({ "icon": "u", "header": null, "cover": null, "at": now })).unwrap();
+        assert_eq!(saved.art.nsfw, None);
+    }
+
+    #[test]
+    fn content_labels_decide_which_games_to_hide() {
+        // label sets as Steam sends them: some nudity (1), violence (2), adult only (3),
+        // frequent nudity or sexual content (4), general mature (5)
+        let body = json!({ "response": { "store_items": [
+            { "appid": 10, "assets": { "community_icon": "a" } },
+            { "appid": 20, "content_descriptorids": [1, 5] },
+            { "appid": 30, "content_descriptorids": [1, 2, 5], "assets": { "community_icon": "c" } },
+            { "appid": 40, "content_descriptorids": [1, 3, 5, 4], "assets": { "community_icon": "d" } },
+            { "appid": 50, "content_descriptorids": [4] },
+            { "appid": 60, "content_descriptorids": [3, 5] },
+            { "appid": 70, "content_descriptorids": "3" },
+            { "id": 80, "success": 15, "appid": 0, "content_descriptorids": [3] }
+        ]}});
+        let out = parse_items(CDN, &[10, 20, 30, 40, 50, 60, 70, 80, 90], &body);
+        let hidden = |id: u32| out[&id].nsfw;
+        assert_eq!([hidden(10), hidden(20), hidden(30)], [Some(false); 3]);
+        assert_eq!([hidden(40), hidden(50), hidden(60)], [Some(true); 3]);
+        // labels in a shape that isn't a list, a game Steam's store has nothing on,
+        // and one the reply leaves out: answered, and not hidden
+        assert_eq!([hidden(70), hidden(80), hidden(90)], [Some(false); 3]);
+        // a hidden game keeps its pictures: hiding is the window's business
+        assert!(out[&40].icon.is_some());
     }
 
     /// A stand-in for Steam's store API: answers every request with assets for
@@ -477,6 +549,22 @@ mod tests {
         let out = offline.resolve(&http, "english", &[1, 2, 3]).await;
         assert_eq!(out.len(), 1);
         assert!(out[&1].icon.is_some());
+
+        // an answer that has gone out of date is still given when Steam can't be asked again
+        let aged = json!({
+            "1": { "icon": "old-icon", "header": null, "cover": null, "nsfw": true, "at": 1000 },
+            "2": { "icon": "before-labels", "header": null, "cover": null, "at": 1000 }
+        });
+        std::fs::write(dir.join(CACHE_FILE), aged.to_string()).unwrap();
+        let later = ArtResolver::with_endpoints(&dir, "http://127.0.0.1:9", CDN);
+        let out = later.resolve(&http, "english", &[1, 2, 3]).await;
+        assert_eq!(out.len(), 1, "only the game whose content was known");
+        assert_eq!((out[&1].nsfw, out[&1].icon.as_deref()), (Some(true), Some("old-icon")));
+        // and replaced by a fresh answer once Steam is there again
+        let back = ArtResolver::with_endpoints(&dir, &api, CDN);
+        let out = back.resolve(&http, "english", &[1, 2]).await;
+        assert_eq!((out[&1].nsfw, out[&2].nsfw), (Some(false), Some(false)));
+        assert!(out[&2].icon.as_deref().is_some_and(|u| u.ends_with("icon2.jpg")));
 
         // a damaged cache file is ignored rather than fatal
         std::fs::write(dir.join(CACHE_FILE), "{ not json").unwrap();

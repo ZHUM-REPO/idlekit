@@ -2,6 +2,14 @@
 
 The section for the version being released becomes the text of its release page.
 
+## 1.0
+
+- **Hide NSFW games.** A new switch under Settings → Appearance. When it is on, games that Steam labels “Adult Only Sexual Content” or “Frequent Nudity or Sexual Content” are left out of every list in the window: the Library, Idling, Card farming, the Achievements manager and unlock queue, and the Market's inventory and listings. Games Steam labels only “Some Nudity or Sexual Content”, such as many mainstream games, stay.
+- Hiding is about what the window shows. A hidden game that is on the auto-idle list, in the unlock queue or has card drops left keeps running; the pages say how many games are not shown.
+- What a game contains comes from Steam's store, with the lookup that already finds its pictures, and is remembered on disk. With the switch on, a game is shown only once Steam has answered for it, so the first time the lists fill in after a moment. If Steam can't be reached, the page says how many games are waiting and offers to ask again.
+- Lines on the Logs page that name a hidden game are left out there. `log.txt` still has them.
+- It is off unless you turn it on.
+
 ## 0.9
 
 Fixes for two faults that 0.8 brought to the Logs page, and two precautions.

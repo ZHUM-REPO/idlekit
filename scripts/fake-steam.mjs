@@ -23,6 +23,9 @@ import path from "node:path";
 
 const port = Number(process.argv[2] || 4599);
 const LOG = process.env.FAKE_STEAM_LOG || path.join(os.tmpdir(), "fake-steam.log");
+// App ids the store labels as adult-only, for trying "Hide NSFW games":
+//   FAKE_STEAM_ADULT=892970,1091500 node scripts/fake-steam.mjs
+const ADULT = new Set((process.env.FAKE_STEAM_ADULT || "").split(",").filter(Boolean).map(Number));
 fs.writeFileSync(LOG, "");
 const log = (line) => fs.appendFileSync(LOG, line + "\n");
 
@@ -124,7 +127,9 @@ http
           community_icon: Math.floor(id / 4) % 2 ? iconHash : `${iconHash}.jpg`,
         };
         if (!NO_COVER.has(id)) assets.library_capsule = HASHED.has(id) ? `${dir}library_capsule.jpg` : "library_600x900.jpg";
-        return { item_type: 0, id, success: 1, visible: true, name: NAMES[id] || `App ${id}`, appid: id, assets };
+        // Steam's labels: 1 some nudity, 2 violence, 3 adult only, 4 frequent nudity or sexual content, 5 general mature.
+        const labels = ADULT.has(id) ? { content_descriptorids: [1, 3, 5, 4] } : id % 2 ? { content_descriptorids: [1, 2, 5] } : {};
+        return { item_type: 0, id, success: 1, visible: true, name: NAMES[id] || `App ${id}`, appid: id, ...labels, assets };
       });
       return setTimeout(() => send(res, 200, "application/json", JSON.stringify({ response: { store_items } })), 150);
     }
