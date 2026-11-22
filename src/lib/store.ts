@@ -88,6 +88,9 @@ function applyTheme(s: Settings) {
   root.dataset.accent = s.accent;
 }
 
+/** Numbers log lines in the order the window got them. */
+let nextLine = 1;
+
 export const useApp = create<State>((set, get) => ({
   ready: false,
   fatal: null,
@@ -139,7 +142,7 @@ export const useApp = create<State>((set, get) => ({
         idle: Object.fromEntries(b.idle.map((s) => [s.steamId, s.games])),
         farm: Object.fromEntries(b.farming.map((f) => [f.steamId, f])),
         unlock: Object.fromEntries(b.unlocker.map((u) => [u.steamId, u])),
-        logs: b.logs,
+        logs: b.logs.map((l) => ({ ...l, n: nextLine++ })),
         desktop: b.desktop,
         update: b.update,
         page: initialPage ?? (b.accounts.length === 0 ? "accounts" : "library"),
@@ -150,7 +153,18 @@ export const useApp = create<State>((set, get) => ({
       set({ fatal: errorText(e) });
       return;
     }
-    on("log://line", (l) => set((s) => ({ logs: [...s.logs.slice(-1499), l] })));
+    // Lines can come in bursts. They are gathered and added once per frame,
+    // so a burst copies the list once, not once per line.
+    let arrived: LogLine[] = [];
+    on("log://line", (l) => {
+      arrived.push({ ...l, n: nextLine++ });
+      if (arrived.length > 1) return;
+      requestAnimationFrame(() => {
+        const batch = arrived;
+        arrived = [];
+        set((s) => ({ logs: [...s.logs, ...batch].slice(-1500) }));
+      });
+    });
     on("state://accounts", () => void get().refreshAccounts());
     on("cm://status", (c) => set((s) => ({ cm: { ...s.cm, [c.steamId]: c } })));
     on("idle://status", (snap) => set((s) => ({ idle: { ...s.idle, [snap.steamId]: snap.games } })));

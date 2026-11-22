@@ -18,7 +18,7 @@ use crate::steam::{schema, webapi};
 use crate::updates::{self, UpdateState};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 use tauri::{AppHandle, State};
@@ -71,8 +71,7 @@ pub struct Bootstrap {
 }
 
 fn account_views(app: &App, local: &LocalSteam) -> Vec<AccountView> {
-    app.config()
-        .accounts
+    app.with_config(|c| c.accounts.clone())
         .into_iter()
         .map(|a| AccountView {
             has_token: secrets::get(&secrets::refresh_token_key(&a.steam_id)).is_some(),
@@ -86,13 +85,13 @@ fn account_views(app: &App, local: &LocalSteam) -> Vec<AccountView> {
 #[tauri::command]
 pub async fn get_bootstrap(app: State<'_, App>, handle: AppHandle) -> CmdResult<Bootstrap> {
     let local = app.local_steam();
-    let cfg = app.config();
+    let (settings, active_account) = app.with_config(|c| (c.settings.clone(), c.active_account.clone()));
     Ok(Bootstrap {
         version: crate::updates::shown(env!("CARGO_PKG_VERSION")),
         data_dir: app.data_dir.to_string_lossy().into_owned(),
         accounts: account_views(&app, &local),
-        settings: cfg.settings,
-        active_account: cfg.active_account,
+        settings,
+        active_account,
         helper_found: app.helpers.helper_path().exists(),
         local_steam: local,
         cm: app.cm.statuses(),
@@ -125,9 +124,10 @@ pub async fn save_settings(app: State<'_, App>, settings: Settings) -> CmdResult
         return Ok(());
     }
     // Apply the custom status text to connected direct accounts right away.
-    for a in app.config().accounts.iter().filter(|a| a.mode == "direct") {
-        if app.cm.is_online(&a.steam_id) {
-            let _ = app.cm.set_status_text(&a.steam_id, &text).await;
+    let direct: Vec<String> = app.with_config(|c| c.accounts.iter().filter(|a| a.mode == "direct").map(|a| a.steam_id.clone()).collect());
+    for steam_id in direct {
+        if app.cm.is_online(&steam_id) {
+            let _ = app.cm.set_status_text(&steam_id, &text).await;
         }
     }
     Ok(())
@@ -473,9 +473,20 @@ pub async fn picture_fetch(
 /// Toggle membership of an appid in one of the per-account lists.
 #[tauri::command]
 pub async fn set_in_list(app: State<'_, App>, steam_id: String, list: String, appid: u32, on: bool) -> CmdResult<()> {
+    change_list(&app, &steam_id, &list, &[appid], on).map(|_| ())
+}
+
+/// The same for many games at once: one save and one notice to the window,
+/// however many games there are. Answers how many games were given.
+#[tauri::command]
+pub async fn set_in_list_many(app: State<'_, App>, steam_id: String, list: String, appids: Vec<u32>, on: bool) -> CmdResult<usize> {
+    change_list(&app, &steam_id, &list, &appids, on)
+}
+
+fn change_list(app: &App, steam_id: &str, list: &str, appids: &[u32], on: bool) -> CmdResult<usize> {
     let ok = app.update_config(|c| {
-        let Some(a) = c.account_mut(&steam_id) else { return false };
-        let target = match list.as_str() {
+        let Some(a) = c.account_mut(steam_id) else { return false };
+        let target = match list {
             "favorites" => &mut a.favorites,
             "autoIdle" => &mut a.auto_idle,
             "farmBlacklist" => &mut a.farm_blacklist,
@@ -483,17 +494,25 @@ pub async fn set_in_list(app: State<'_, App>, steam_id: String, list: String, ap
             "unlockQueue" => &mut a.unlock_queue,
             _ => return false,
         };
-        target.retain(|x| *x != appid);
-        if on {
-            target.push(appid);
-        }
+        apply_to_list(target, appids, on);
         true
     });
     if !ok {
         return Err(format!("unknown list {list}"));
     }
     app.emit_accounts();
-    Ok(())
+    Ok(appids.len())
+}
+
+/// Takes `appids` out of the list and, when adding, puts them at its end in
+/// the order given, each once. One pass over the list, whatever its length.
+fn apply_to_list(target: &mut Vec<u32>, appids: &[u32], on: bool) {
+    let changing: HashSet<u32> = appids.iter().copied().collect();
+    target.retain(|x| !changing.contains(x));
+    if on {
+        let mut added = HashSet::new();
+        target.extend(appids.iter().copied().filter(|a| added.insert(*a)));
+    }
 }
 
 // ---------------------------------------------------------------- idling --
@@ -929,7 +948,7 @@ pub async fn market_prices(app: State<'_, App>, steam_id: String, hash_names: Ve
             break;
         }
         progress("prices", i, total, format!("Pricing {hash}"));
-        let cached = app.config().item_name_ids.get(&hash).copied();
+        let cached = app.with_config(|c| c.item_name_ids.get(&hash).copied());
         let nameid = match cached {
             Some(id) => Ok(id),
             None => {
@@ -1114,4 +1133,24 @@ pub async fn update_check(app: State<'_, App>, handle: AppHandle) -> CmdResult<U
 #[tauri::command]
 pub async fn update_install(app: State<'_, App>, handle: AppHandle) -> CmdResult<()> {
     updates::install(&app, &handle).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn many_games_change_a_list_in_one_go() {
+        let mut list = vec![10, 20, 30, 40];
+        // adding moves a game already there to the end, and repeats count once
+        apply_to_list(&mut list, &[50, 20, 50, 60], true);
+        assert_eq!(list, vec![10, 30, 40, 50, 20, 60]);
+        apply_to_list(&mut list, &[10, 60, 999], false);
+        assert_eq!(list, vec![30, 40, 50, 20]);
+        apply_to_list(&mut list, &[], true);
+        assert_eq!(list, vec![30, 40, 50, 20]);
+        // one game, as before
+        apply_to_list(&mut list, &[40], true);
+        assert_eq!(list, vec![30, 50, 20, 40]);
+    }
 }

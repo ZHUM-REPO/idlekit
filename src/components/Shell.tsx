@@ -243,7 +243,8 @@ export function TopBar() {
   const idle = useApp((s) => (active ? s.idle[active.steamId] : undefined));
   const farm = useApp((s) => (active ? s.farm[active.steamId] : undefined));
   const unlock = useApp((s) => (active ? s.unlock[active.steamId] : undefined));
-  const now = useNow(1000);
+  // The only thing here that counts down is the unlocker's "Next in …".
+  const now = useNow(1000, !!unlock?.running);
 
   const idleN = idle?.length ?? 0;
   const nextUnlock = unlock?.games

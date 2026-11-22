@@ -2,7 +2,6 @@
 //! backgrounds, boosters), live order-book pricing, listing and delisting.
 use super::community::WebSession;
 use anyhow::{anyhow, bail, Context, Result};
-use regex::Regex;
 use scraper::{Html, Selector};
 use serde::Serialize;
 use serde_json::Value;
@@ -98,12 +97,15 @@ impl Wallet {
     /// none (signed out). A number that is missing or implausible keeps its
     /// US-dollar default.
     pub fn parse(html: &str) -> Option<Wallet> {
-        let field = |name: &str| -> Option<f64> {
-            Regex::new(&format!(r#""{name}"\s*:\s*"?([0-9]+(?:\.[0-9]+)?)"?"#))
-                .ok()?
-                .captures(html)
-                .and_then(|c| c[1].parse::<f64>().ok())
-        };
+        // Every wallet number in one pass over the page, with one pattern.
+        let mut numbers: BTreeMap<&str, f64> = BTreeMap::new();
+        for found in re!(r#""(wallet_[a-z_]+)"\s*:\s*"?([0-9]+(?:\.[0-9]+)?)"?"#).captures_iter(html) {
+            if let (Some(name), Ok(value)) = (found.get(1), found[2].parse::<f64>()) {
+                // The first one counts, as when each was looked for by name.
+                numbers.entry(name.as_str()).or_insert(value);
+            }
+        }
+        let field = |name: &str| -> Option<f64> { numbers.get(name).copied() };
         let whole = |name: &str, low: f64, high: f64| field(name).filter(|v| (low..=high).contains(v)).map(|v| v as u32);
         let share = |name: &str| field(name).filter(|v| (0.0..0.5).contains(v));
         let d = Wallet::default();
@@ -309,7 +311,7 @@ pub async fn item_name_id(ws: &WebSession, hash_name: &str) -> Result<u64> {
         urlencoding::encode(hash_name)
     );
     let html = ws.get_text(&url).await?;
-    Regex::new(r"Market_LoadOrderSpread\(\s*(\d+)\s*\)")?
+    re!(r"Market_LoadOrderSpread\(\s*(\d+)\s*\)")
         .captures(&html)
         .and_then(|c| c[1].parse().ok())
         .ok_or_else(|| anyhow!("no order book for {hash_name}"))
@@ -379,13 +381,13 @@ pub async fn sell(ws: &WebSession, asset_id: &str, seller_cents: u32) -> Result<
 
 pub fn parse_listings_html(html: &str) -> Vec<Listing> {
     let doc = Html::parse_fragment(html);
-    let section_sel = Selector::parse(".my_listing_section").unwrap();
-    let row_sel = Selector::parse("div.market_listing_row").unwrap();
-    let header_sel = Selector::parse(".my_market_header_active, .my_market_header").unwrap();
-    let name_sel = Selector::parse(".market_listing_item_name").unwrap();
-    let game_sel = Selector::parse(".market_listing_game_name").unwrap();
-    let price_sel = Selector::parse(".market_listing_price").unwrap();
-    let id_re = Regex::new(r"mylisting_(\d+)").unwrap();
+    let section_sel = sel!(".my_listing_section");
+    let row_sel = sel!("div.market_listing_row");
+    let header_sel = sel!(".my_market_header_active, .my_market_header");
+    let name_sel = sel!(".market_listing_item_name");
+    let game_sel = sel!(".market_listing_game_name");
+    let price_sel = sel!(".market_listing_price");
+    let id_re = re!(r"mylisting_(\d+)");
     let squash = |s: String| s.split_whitespace().collect::<Vec<_>>().join(" ");
 
     let mut out = Vec::new();

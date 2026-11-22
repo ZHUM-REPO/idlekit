@@ -1,5 +1,5 @@
 import { Check, Ellipsis, Play, Plus, RefreshCw, Search, Square, Star, Trophy } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { GameArt } from "../components/GameArt";
 import { Button, Callout, Empty, Field, IconButton, Modal, NumberInput, PageHeader, Select, TextInput, cx } from "../components/ui";
 import { api } from "../lib/api";
@@ -38,13 +38,16 @@ export function LibraryPage() {
   }, [account?.steamId]);
 
   const idleMap = useMemo(() => new Map(idle.map((g) => [g.appid, g])), [idle]);
+  const favorites = account?.favorites;
+  const favSet = useMemo(() => new Set(favorites ?? []), [favorites]);
+  const steamId = account?.steamId;
 
   const shown = useMemo(() => {
-    if (!games || !account) return [];
+    if (!games) return [];
     const q = query.trim().toLowerCase();
     let list = games.filter((g) => {
       if (q && !g.name.toLowerCase().includes(q) && String(g.appid) !== q) return false;
-      if (filter === "favorites") return account.favorites.includes(g.appid);
+      if (filter === "favorites") return favSet.has(g.appid);
       if (filter === "unplayed") return g.playtimeMinutes === 0;
       if (filter === "manual") return g.manual;
       if (filter === "idling") return idleMap.has(g.appid);
@@ -54,11 +57,42 @@ export function LibraryPage() {
     if (sort === "recent") list = [...list].sort((a, b) => b.lastPlayed - a.lastPlayed);
     if (filter === "all" && !q) {
       // Favorites first in the default view.
-      const fav = new Set(account.favorites);
-      list = [...list.filter((g) => fav.has(g.appid)), ...list.filter((g) => !fav.has(g.appid))];
+      list = [...list.filter((g) => favSet.has(g.appid)), ...list.filter((g) => !favSet.has(g.appid))];
     }
     return list;
-  }, [games, account, query, filter, sort, idleMap]);
+  }, [games, favSet, query, filter, sort, idleMap]);
+
+  // What a tile is given stays the same from one draw to the next, so a tile
+  // is only drawn again when something about that game changed.
+  const idleGames = useCallback(
+    async (list: { appid: number; name: string }[]) => {
+      if (!steamId) return;
+      const results = await run(null, () => api.idleStart(steamId, list));
+      if (!results) return;
+      const failed = results.filter((r) => !r.ok);
+      const ok = results.length - failed.length;
+      if (ok) useApp.getState().toast(`Idling ${ok} ${ok === 1 ? "game" : "games"}`, "ok");
+      if (failed.length) useApp.getState().toast(failed[0].error ?? "Some games could not start", "error");
+    },
+    [steamId, run],
+  );
+  const toggleSelect = useCallback(
+    (appid: number) =>
+      setSelected((s) => {
+        const n = new Set(s);
+        if (n.has(appid)) n.delete(appid);
+        else n.add(appid);
+        return n;
+      }),
+    [],
+  );
+  const idleOne = useCallback((g: GameEntry) => void idleGames([{ appid: g.appid, name: g.name }]), [idleGames]);
+  const stopOne = useCallback(
+    (appid: number) => {
+      if (steamId) void run(null, () => api.idleStop(steamId, [appid]));
+    },
+    [steamId, run],
+  );
 
   if (!account) {
     return (
@@ -76,23 +110,6 @@ export function LibraryPage() {
       </div>
     );
   }
-
-  const idleGames = async (list: { appid: number; name: string }[]) => {
-    const results = await run(null, () => api.idleStart(account.steamId, list));
-    if (!results) return;
-    const failed = results.filter((r) => !r.ok);
-    const ok = results.length - failed.length;
-    if (ok) useApp.getState().toast(`Idling ${ok} ${ok === 1 ? "game" : "games"}`, "ok");
-    if (failed.length) useApp.getState().toast(failed[0].error ?? "Some games could not start", "error");
-  };
-
-  const toggleSelect = (appid: number) =>
-    setSelected((s) => {
-      const n = new Set(s);
-      if (n.has(appid)) n.delete(appid);
-      else n.add(appid);
-      return n;
-    });
 
   return (
     <div className="pb-20">
@@ -201,13 +218,14 @@ export function LibraryPage() {
             key={g.appid}
             game={g}
             shape={cardStyle}
-            account={account}
+            steamId={account.steamId}
+            fav={favSet.has(g.appid)}
             idle={idleMap.get(g.appid)}
             selected={selected.has(g.appid)}
-            onSelect={() => toggleSelect(g.appid)}
-            onIdle={() => void idleGames([{ appid: g.appid, name: g.name }])}
-            onStop={() => void run(null, () => api.idleStop(account.steamId, [g.appid]))}
-            onBoost={() => setBoosting(g)}
+            onSelect={toggleSelect}
+            onIdle={idleOne}
+            onStop={stopOne}
+            onBoost={setBoosting}
           />
         ))}
       </div>
@@ -234,9 +252,9 @@ export function LibraryPage() {
           <Button
             size="sm"
             onClick={() => {
-              void Promise.all(
-                [...selected].map((a) => api.setInList(account.steamId, "autoIdle", a, true)),
-              ).then(() => useApp.getState().toast("Added to auto-idle", "ok"));
+              void run(null, () => api.setInListMany(account.steamId, "autoIdle", [...selected], true)).then((done) => {
+                if (done !== undefined) useApp.getState().toast("Added to auto-idle", "ok");
+              });
               setSelected(new Set());
             }}
           >
@@ -256,10 +274,16 @@ export function LibraryPage() {
 
 const MENU_WIDTH = 240;
 
-function GameTile({
+/**
+ * One game in the grid. Memoized, and given only what is about this game, so
+ * typing in the filter, selecting another game or a change to some list
+ * doesn't draw every tile again.
+ */
+const GameTile = memo(function GameTile({
   game,
   shape,
-  account,
+  steamId,
+  fav,
   idle,
   selected,
   onSelect,
@@ -269,16 +293,15 @@ function GameTile({
 }: {
   game: GameEntry;
   shape: "cover" | "banner";
-  account: Account;
+  steamId: string;
+  fav: boolean;
   idle?: IdleGame;
   selected: boolean;
-  onSelect: () => void;
-  onIdle: () => void;
-  onStop: () => void;
-  onBoost: () => void;
+  onSelect: (appid: number) => void;
+  onIdle: (game: GameEntry) => void;
+  onStop: (appid: number) => void;
+  onBoost: (game: GameEntry) => void;
 }) {
-  const go = useApp((s) => s.go);
-  const fav = account.favorites.includes(game.appid);
   // The menu is wider than a cover card, so it opens toward whichever side has room.
   const [menu, setMenu] = useState<null | "left" | "right">(null);
   const tileRef = useRef<HTMLDivElement>(null);
@@ -298,7 +321,7 @@ function GameTile({
     setMenu((m) => (m ? null : window.innerWidth - left < MENU_WIDTH + 24 ? "right" : "left"));
   };
 
-  const toggle = (list: string, on: boolean) => void api.setInList(account.steamId, list, game.appid, on);
+  const toggle = (list: string, on: boolean) => void api.setInList(steamId, list, game.appid, on);
 
   return (
     <div className="group relative" ref={tileRef}>
@@ -310,7 +333,7 @@ function GameTile({
       >
         <GameArt appid={game.appid} name={game.name} shape={shape} />
         <button
-          onClick={onSelect}
+          onClick={() => onSelect(game.appid)}
           aria-label={selected ? `Deselect ${game.name}` : `Select ${game.name}`}
           aria-pressed={selected}
           className={cx(
@@ -326,14 +349,14 @@ function GameTile({
         <div className="absolute right-2 top-2 flex gap-1 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100 [@media(hover:none)]:opacity-100">
           {idle ? (
             <button
-              onClick={onStop}
+              onClick={() => onStop(game.appid)}
               className="flex h-7 items-center gap-1.5 rounded-md bg-black/70 px-2.5 text-[12px] text-white hover:bg-black/85"
             >
               <Square size={12} fill="currentColor" /> Stop
             </button>
           ) : (
             <button
-              onClick={onIdle}
+              onClick={() => onIdle(game)}
               className="flex h-7 items-center gap-1.5 rounded-md bg-run px-2.5 text-[12px] font-semibold text-run-ink hover:brightness-110"
             >
               <Play size={12} fill="currentColor" /> Idle
@@ -366,50 +389,80 @@ function GameTile({
         </div>
       </div>
       {menu && (
-        <div
+        <TileMenu
           ref={menuRef}
-          style={{ width: MENU_WIDTH }}
-          className={cx(
-            "absolute top-full z-30 mt-1 overflow-hidden rounded-lg border border-line-strong bg-panel py-1 shadow-2xl",
-            menu === "left" ? "left-0" : "right-0",
-          )}
+          side={menu}
+          game={game}
+          steamId={steamId}
+          toggle={toggle}
+          onBoost={() => {
+            setMenu(null);
+            onBoost(game);
+          }}
+          onRemoved={() => setMenu(null)}
+        />
+      )}
+    </div>
+  );
+});
+
+/** A tile's "more actions" menu. Only exists while open, so the lists it shows are read only then. */
+function TileMenu({
+  ref,
+  side,
+  game,
+  steamId,
+  toggle,
+  onBoost,
+  onRemoved,
+}: {
+  ref: React.Ref<HTMLDivElement>;
+  side: "left" | "right";
+  game: GameEntry;
+  steamId: string;
+  toggle: (list: string, on: boolean) => void;
+  onBoost: () => void;
+  onRemoved: () => void;
+}) {
+  const go = useApp((s) => s.go);
+  const account = useActiveAccount();
+  if (!account) return null;
+  return (
+    <div
+      ref={ref}
+      style={{ width: MENU_WIDTH }}
+      className={cx(
+        "absolute top-full z-30 mt-1 overflow-hidden rounded-lg border border-line-strong bg-panel py-1 shadow-2xl",
+        side === "left" ? "left-0" : "right-0",
+      )}
+    >
+      <MenuItem
+        onClick={() => {
+          go("achievements", { achAppid: game.appid });
+        }}
+      >
+        <Trophy size={14} /> Achievements
+      </MenuItem>
+      <MenuItem onClick={onBoost}>Boost playtime…</MenuItem>
+      <MenuItem onClick={() => toggle("autoIdle", !account.autoIdle.includes(game.appid))}>
+        {account.autoIdle.includes(game.appid) ? "Remove from auto-idle" : "Add to auto-idle"}
+      </MenuItem>
+      <MenuItem onClick={() => toggle("farmBlacklist", !account.farmBlacklist.includes(game.appid))}>
+        {account.farmBlacklist.includes(game.appid) ? "Allow card farming" : "Never farm cards for this game"}
+      </MenuItem>
+      <MenuItem onClick={() => toggle("unlockQueue", !account.unlockQueue.includes(game.appid))}>
+        {account.unlockQueue.includes(game.appid) ? "Remove from unlock queue" : "Add to unlock queue"}
+      </MenuItem>
+      {game.manual && (
+        <MenuItem
+          danger
+          onClick={() => {
+            onRemoved();
+            void api.removeManualGame(steamId, game.appid).then(() => useApp.getState().loadGames(steamId));
+          }}
         >
-          <MenuItem
-            onClick={() => {
-              go("achievements", { achAppid: game.appid });
-            }}
-          >
-            <Trophy size={14} /> Achievements
-          </MenuItem>
-          <MenuItem
-            onClick={() => {
-              setMenu(null);
-              onBoost();
-            }}
-          >
-            Boost playtime…
-          </MenuItem>
-          <MenuItem onClick={() => toggle("autoIdle", !account.autoIdle.includes(game.appid))}>
-            {account.autoIdle.includes(game.appid) ? "Remove from auto-idle" : "Add to auto-idle"}
-          </MenuItem>
-          <MenuItem onClick={() => toggle("farmBlacklist", !account.farmBlacklist.includes(game.appid))}>
-            {account.farmBlacklist.includes(game.appid) ? "Allow card farming" : "Never farm cards for this game"}
-          </MenuItem>
-          <MenuItem onClick={() => toggle("unlockQueue", !account.unlockQueue.includes(game.appid))}>
-            {account.unlockQueue.includes(game.appid) ? "Remove from unlock queue" : "Add to unlock queue"}
-          </MenuItem>
-          {game.manual && (
-            <MenuItem
-              danger
-              onClick={() => {
-                setMenu(null);
-                void api.removeManualGame(account.steamId, game.appid).then(() => useApp.getState().loadGames(account.steamId));
-              }}
-            >
-              Remove from library
-            </MenuItem>
-          )}
-        </div>
+          Remove from library
+        </MenuItem>
       )}
     </div>
   );

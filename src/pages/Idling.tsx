@@ -25,7 +25,7 @@ export function IdlingPage() {
   const saveSettings = useApp((s) => s.saveSettings);
   const run = useApp((s) => s.run);
   const go = useApp((s) => s.go);
-  const now = useNow(1000);
+  const now = useNow(1000, idle.length > 0);
   const [busy, setBusy] = useState<string | null>(null);
   useEnsureGames(account?.steamId);
 

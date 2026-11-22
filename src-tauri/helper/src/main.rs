@@ -16,6 +16,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use steamworks::{Client, SteamAPIInitError, UserStatsReceived, UserStatsStored};
 
+/// How often an idling helper looks for messages from Steam.
+const IDLE_PUMP: Duration = Duration::from_secs(1);
 /// How long Steam gets to load a game's stats the first time they are needed.
 const STATS_WAIT: Duration = Duration::from_secs(8);
 const STORE_WAIT: Duration = Duration::from_secs(8);
@@ -265,7 +267,10 @@ fn main() {
 
     loop {
         helper.client.run_callbacks();
-        let line = match rx.recv_timeout(Duration::from_millis(100)) {
+        // A request wakes this at once. With none, once a second is enough to
+        // keep up with Steam: the commands that wait on Steam pump faster
+        // themselves (pump_until).
+        let line = match rx.recv_timeout(IDLE_PUMP) {
             Ok(Some(l)) => l,
             Ok(None) | Err(RecvTimeoutError::Disconnected) => break,
             Err(RecvTimeoutError::Timeout) => continue,

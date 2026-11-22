@@ -126,6 +126,9 @@ export const api = {
   removeManualGame: (steamId: string, appid: number) => call<void>("remove_manual_game", { steamId, appid }),
   setInList: (steamId: string, list: string, appid: number, on: boolean) =>
     call<void>("set_in_list", { steamId, list, appid, on }),
+  /** The same for many games in one call. Answers how many were given. */
+  setInListMany: (steamId: string, list: string, appids: number[], on: boolean) =>
+    call<number>("set_in_list_many", { steamId, list, appids, on }),
   /** Keyed by app id. Games Steam couldn't be reached for are left out. */
   resolveGameArt: (appids: number[]) => call<Record<string, GameArtUrls>>("resolve_game_art", { appids }),
   /** Which of these pictures are on disk already ("kind:id" → file). No network. */

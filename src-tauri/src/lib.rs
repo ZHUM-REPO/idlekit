@@ -254,6 +254,7 @@ pub fn run() {
             commands::add_manual_game,
             commands::remove_manual_game,
             commands::set_in_list,
+            commands::set_in_list_many,
             commands::resolve_game_art,
             commands::idle_start,
             commands::idle_stop,

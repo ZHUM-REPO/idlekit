@@ -1,8 +1,30 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { Button, PageHeader, Select, TextInput, cx } from "../components/ui";
 import { api } from "../lib/api";
 import { timeOfDay } from "../lib/format";
 import { useApp } from "../lib/store";
+import type { LogLine } from "../lib/types";
+
+/**
+ * One line. Memoized and keyed by the line's own number, so a new line draws
+ * one row and leaves the others alone. Rows scrolled out of view are skipped
+ * by the browser when it lays the list out.
+ */
+const Row = memo(function Row({ line: l }: { line: LogLine }) {
+  return (
+    <div className="flex gap-3 [contain-intrinsic-size:auto_20px] [content-visibility:auto]">
+      <span className="flex-none text-faint">{timeOfDay(l.ts)}</span>
+      <span
+        className={cx("w-16 flex-none truncate", l.level === "error" ? "text-bad" : l.level === "warn" ? "text-run" : "text-faint")}
+      >
+        {l.scope}
+      </span>
+      <span className={cx("min-w-0 break-words", l.level === "error" ? "text-bad" : l.level === "debug" ? "text-faint" : "text-ink")}>
+        {l.message}
+      </span>
+    </div>
+  );
+});
 
 export function LogsPage() {
   const logs = useApp((s) => s.logs);
@@ -64,20 +86,7 @@ export function LogsPage() {
       <div className="min-h-0 flex-1 overflow-y-auto rounded-xl border border-line bg-well px-4 py-3 font-mono text-[12px] leading-[1.7]">
         {shown.length === 0 && <div className="text-faint">Nothing logged yet.</div>}
         {shown.map((l, i) => (
-          <div key={i} className="flex gap-3">
-            <span className="flex-none text-faint">{timeOfDay(l.ts)}</span>
-            <span
-              className={cx(
-                "w-16 flex-none truncate",
-                l.level === "error" ? "text-bad" : l.level === "warn" ? "text-run" : "text-faint",
-              )}
-            >
-              {l.scope}
-            </span>
-            <span className={cx("min-w-0 break-words", l.level === "error" ? "text-bad" : l.level === "debug" ? "text-faint" : "text-ink")}>
-              {l.message}
-            </span>
-          </div>
+          <Row key={l.n ?? `i${i}`} line={l} />
         ))}
         <div ref={end} />
       </div>

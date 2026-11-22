@@ -1,6 +1,6 @@
 [package]
 name = "idlekit"
-version = "0.7.0"
+version = "0.8.0"
 description = "Steam idler: card farming, achievement manager, playtime booster and market seller"
 edition = "2021"
 default-run = "idlekit"
@@ -52,3 +52,7 @@ members = ["helper"]
 
 [profile.release]
 strip = true
+# Optimize across crate boundaries and as one unit: a smaller, somewhat faster
+# program for a longer build.
+lto = true
+codegen-units = 1

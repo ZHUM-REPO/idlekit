@@ -58,6 +58,7 @@ export const ACTIONS: Record<string, Action> = {
   get_games: { label: "Load the games list", detail: (a) => `${account(a)}${a.refresh ? ", refreshed from Steam" : ""}` },
   add_manual_game: { label: "Add a game by hand", detail: (a) => `${game(a)} "${String(a.name)}"` },
   remove_manual_game: { label: "Remove a hand-added game", detail: game },
+  set_in_list_many: { label: "Change a games list", detail: (a) => `${count(a.appids)} game(s) ${a.on ? "added to" : "removed from"} ${String(a.list)}` },
   set_in_list: { label: "Change a games list", detail: (a) => `${game(a)} ${a.on ? "added to" : "removed from"} ${String(a.list)}` },
 
   idle_start: { label: "Start idling", detail: (a) => `${count(a.games)} game(s) (${ids(a.games)})` },

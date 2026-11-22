@@ -23,7 +23,7 @@ export function FarmingPage() {
   const settings = useApp((s) => s.settings);
   const run = useApp((s) => s.run);
   const go = useApp((s) => s.go);
-  const now = useNow(1000);
+  const now = useNow(1000, !!status?.running);
   const [preview, setPreview] = useState<FarmGame[] | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   useEnsureGames(account?.steamId);

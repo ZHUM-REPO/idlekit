@@ -99,6 +99,13 @@ impl App {
         self.config.lock().unwrap().settings.clone()
     }
 
+    /// Reads from the settings without copying all of them: every account,
+    /// every list and every remembered market item. Keep `f` short, since
+    /// nothing else can read or change the settings while it runs.
+    pub fn with_config<R>(&self, f: impl FnOnce(&Config) -> R) -> R {
+        f(&self.config.lock().unwrap())
+    }
+
     /// Keeps every account's sign-in name out of the log: accounts are named
     /// there by the end of their Steam ID.
     pub fn hide_names(&self) {
@@ -126,7 +133,7 @@ impl App {
     }
 
     pub fn emit_accounts(&self) {
-        logbus::emit("state://accounts", self.config().accounts);
+        logbus::emit("state://accounts", self.with_config(|c| c.accounts.clone()));
     }
 
     // ------------------------------------------------------ local client --
@@ -383,9 +390,13 @@ impl App {
         let url = format!("https://steamcommunity.com/profiles/{steam_id}/?xml=1");
         let Ok(resp) = self.http.get(&url).send().await else { return };
         let Ok(text) = resp.text().await else { return };
+        // One pattern for the tags wanted, built once.
+        static TAGS: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+        let tags = TAGS.get_or_init(|| {
+            regex::Regex::new(r"<(steamID|avatarFull|avatarMedium)>\s*(?:<!\[CDATA\[)?(.*?)(?:\]\]>)?\s*</(?:steamID|avatarFull|avatarMedium)>").expect("valid regex")
+        });
         let grab = |tag: &str| -> Option<String> {
-            let re = regex::Regex::new(&format!(r"<{tag}>\s*(?:<!\[CDATA\[)?(.*?)(?:\]\]>)?\s*</{tag}>")).ok()?;
-            re.captures(&text).map(|c| c[1].trim().to_string()).filter(|s| !s.is_empty())
+            tags.captures_iter(&text).find(|c| &c[1] == tag).map(|c| c[2].trim().to_string()).filter(|s| !s.is_empty())
         };
         let name = grab("steamID");
         let avatar = grab("avatarFull").or_else(|| grab("avatarMedium"));

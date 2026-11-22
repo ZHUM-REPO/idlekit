@@ -172,6 +172,8 @@ export interface UnlockStatus {
 }
 
 export interface LogLine {
+  /** Given by the window as the line arrives, so a row keeps its identity when the list moves up. */
+  n?: number;
   ts: number;
   level: "info" | "warn" | "error" | "debug";
   scope: string;

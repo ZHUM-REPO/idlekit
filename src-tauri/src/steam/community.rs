@@ -5,10 +5,9 @@ use super::webapi::{OwnedGame, UA_BROWSER};
 use anyhow::{anyhow, bail, Context, Result};
 use chrono::{Datelike, NaiveDate, NaiveDateTime, NaiveTime};
 use rand::Rng;
-use regex::Regex;
-use scraper::{ElementRef, Html, Selector};
+use scraper::{ElementRef, Html};
 use serde::Serialize;
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 use std::time::Duration;
 
 const DOMAINS: [&str; 4] = [
@@ -195,7 +194,7 @@ pub async fn profile_unlock_times(
 /// Accepts a profile URL, vanity name or 17-digit SteamID.
 pub fn profile_base_url(input: &str) -> Result<String> {
     let s = input.trim().trim_end_matches('/');
-    if let Some(caps) = re(r"steamcommunity\.com/(id|profiles)/([^/?#]+)").captures(s) {
+    if let Some(caps) = re!(r"steamcommunity\.com/(id|profiles)/([^/?#]+)").captures(s) {
         return Ok(format!("https://steamcommunity.com/{}/{}", &caps[1], &caps[2]));
     }
     if s.len() == 17 && s.chars().all(|c| c.is_ascii_digit()) {
@@ -208,15 +207,6 @@ pub fn profile_base_url(input: &str) -> Result<String> {
 }
 
 // ---------------------------------------------------------------- parsers --
-
-fn re(pattern: &str) -> Regex {
-    // Small fixed set of patterns; compile on demand is fine at our call rates.
-    Regex::new(pattern).expect("valid regex")
-}
-
-fn sel(css: &str) -> Selector {
-    Selector::parse(css).expect("valid selector")
-}
 
 fn text_of(el: ElementRef) -> String {
     el.text().collect::<Vec<_>>().join(" ").replace('\u{a0}', " ")
@@ -242,23 +232,20 @@ pub struct BadgesPage {
 }
 
 fn logged_in_as(html: &str) -> Option<String> {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| re(r#"g_steamID\s*=\s*"(\d{17})""#))
+    re!(r#"g_steamID\s*=\s*"(\d{17})""#)
         .captures(html)
         .map(|c| c[1].to_string())
 }
 
 fn drops_from_text(t: &str) -> u32 {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| re(r"(\d+)\s+card drops?\s+remaining"))
+    re!(r"(\d+)\s+card drops?\s+remaining")
         .captures(t)
         .and_then(|c| c[1].parse().ok())
         .unwrap_or(0)
 }
 
 fn hours_from_text(t: &str) -> f64 {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| re(r"([\d,]+(?:\.\d+)?)\s+hrs?\s+on record"))
+    re!(r"([\d,]+(?:\.\d+)?)\s+hrs?\s+on record")
         .captures(t)
         .and_then(|c| c[1].replace(',', "").parse().ok())
         .unwrap_or(0.0)
@@ -266,11 +253,11 @@ fn hours_from_text(t: &str) -> f64 {
 
 pub fn parse_badges_page(html: &str) -> BadgesPage {
     let doc = Html::parse_document(html);
-    let appid_re = re(r"/gamecards/(\d+)");
+    let appid_re = re!(r"/gamecards/(\d+)");
     let mut games = Vec::new();
-    for row in doc.select(&sel("div.badge_row")) {
+    for row in doc.select(sel!("div.badge_row")) {
         let Some(href) = row
-            .select(&sel("a.badge_row_overlay"))
+            .select(sel!("a.badge_row_overlay"))
             .next()
             .and_then(|a| a.value().attr("href"))
         else {
@@ -286,17 +273,17 @@ pub fn parse_badges_page(html: &str) -> BadgesPage {
             continue;
         }
         let drops = row
-            .select(&sel(".progress_info_bold"))
+            .select(sel!(".progress_info_bold"))
             .next()
             .map(|e| drops_from_text(&text_of(e)))
             .unwrap_or(0);
         let hours = row
-            .select(&sel(".badge_title_stats_playtime"))
+            .select(sel!(".badge_title_stats_playtime"))
             .next()
             .map(|e| hours_from_text(&text_of(e)))
             .unwrap_or(0.0);
         let name = row
-            .select(&sel(".badge_title"))
+            .select(sel!(".badge_title"))
             .next()
             .map(|e| {
                 let full = text_of(e);
@@ -306,7 +293,7 @@ pub fn parse_badges_page(html: &str) -> BadgesPage {
         games.push(BadgeGame { appid, name, drops_remaining: drops, playtime_hours: hours });
     }
     let max_page = doc
-        .select(&sel("a.pagelink"))
+        .select(sel!("a.pagelink"))
         .filter_map(|a| text_of(a).trim().parse::<u32>().ok())
         .max()
         .unwrap_or(1)
@@ -317,17 +304,17 @@ pub fn parse_badges_page(html: &str) -> BadgesPage {
 pub fn parse_gamecard_page(html: &str) -> BadgeGame {
     let doc = Html::parse_document(html);
     let drops = doc
-        .select(&sel(".progress_info_bold"))
+        .select(sel!(".progress_info_bold"))
         .next()
         .map(|e| drops_from_text(&text_of(e)))
         .unwrap_or(0);
     let hours = doc
-        .select(&sel(".badge_title_stats_playtime"))
+        .select(sel!(".badge_title_stats_playtime"))
         .next()
         .map(|e| hours_from_text(&text_of(e)))
         .unwrap_or(0.0);
     let name = doc
-        .select(&sel(".badge_title"))
+        .select(sel!(".badge_title"))
         .next()
         .map(|e| squash(&text_of(e).replace("View details", "")))
         .unwrap_or_default();
@@ -355,18 +342,18 @@ pub fn parse_date_loose(s: &str) -> Option<NaiveDate> {
 pub fn parse_licenses_page(html: &str) -> Vec<License> {
     let doc = Html::parse_document(html);
     let mut out = Vec::new();
-    for tr in doc.select(&sel("table.account_table tr")) {
+    for tr in doc.select(sel!("table.account_table tr")) {
         let Some(date) = tr
-            .select(&sel("td.license_date_col"))
+            .select(sel!("td.license_date_col"))
             .next()
             .and_then(|td| parse_date_loose(&text_of(td)))
         else {
             continue;
         };
-        let tds: Vec<ElementRef> = tr.select(&sel("td")).collect();
+        let tds: Vec<ElementRef> = tr.select(sel!("td")).collect();
         let Some(item) = tds.get(1) else { continue };
         let remove_text: String = item
-            .select(&sel(".free_license_remove_link"))
+            .select(sel!(".free_license_remove_link"))
             .map(text_of)
             .collect::<Vec<_>>()
             .join(" ");
@@ -432,13 +419,13 @@ pub fn likely_refundable(game_name: &str, playtime_hours: f64, licenses: &[Licen
 pub fn parse_games_page(html: &str) -> Result<Vec<OwnedGame>> {
     let doc = Html::parse_document(html);
     let raw = doc
-        .select(&sel("[data-profile-gameslist]"))
+        .select(sel!("[data-profile-gameslist]"))
         .next()
         .and_then(|e| e.value().attr("data-profile-gameslist"))
         .map(str::to_string)
         .or_else(|| {
             // Older layout: var rgGames = [...];
-            re(r"(?s)var rgGames\s*=\s*(\[.*?\]);")
+            re!(r"(?s)var rgGames\s*=\s*(\[.*?\]);")
                 .captures(html)
                 .map(|c| format!("{{\"rgGames\":{}}}", &c[1]))
         })
@@ -495,16 +482,16 @@ pub fn parse_unlock_time(text: &str, current_year: i32) -> Option<NaiveDateTime>
 pub fn parse_profile_achievements(html: &str, current_year: i32) -> Vec<(String, i64)> {
     let doc = Html::parse_document(html);
     let mut rows: Vec<(String, NaiveDateTime)> = Vec::new();
-    for row in doc.select(&sel(".achieveRow")) {
+    for row in doc.select(sel!(".achieveRow")) {
         let Some(time) = row
-            .select(&sel(".achieveUnlockTime"))
+            .select(sel!(".achieveUnlockTime"))
             .next()
             .and_then(|e| parse_unlock_time(&text_of(e), current_year))
         else {
             continue;
         };
         let name = row
-            .select(&sel(".achieveTxt h3"))
+            .select(sel!(".achieveTxt h3"))
             .next()
             .map(|e| squash(&text_of(e)))
             .unwrap_or_default();

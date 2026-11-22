@@ -158,11 +158,11 @@ export function createMock() {
   const updateDemo = params.get("update");
   const update: UpdateState = {
     configured: updateDemo !== "off",
-    current: "0.7",
+    current: "0.8",
     phase: updateDemo === "downloading" ? "downloading" : "idle",
     available:
       updateDemo && updateDemo !== "off"
-        ? { version: "0.8", notes: "A sample release, for previewing how updates look." }
+        ? { version: "0.9", notes: "A sample release, for previewing how updates look." }
         : null,
     checkedAt: now - 4 * 60_000,
     error: updateDemo === "error" ? "Couldn't install the update: the connection was lost" : null,
@@ -281,7 +281,7 @@ export function createMock() {
   };
 
   const logs: LogLine[] = [
-    { ts: now - 3 * 3600_000, level: "info", scope: "app", message: "IdleKit 0.7 started" },
+    { ts: now - 3 * 3600_000, level: "info", scope: "app", message: "IdleKit 0.8 started" },
     { ts: now - 3 * 3600_000 + 2000, level: "info", scope: "direct", message: `${ALT} connected to Steam` },
     { ts: now - 3 * 3600_000 + 5000, level: "info", scope: "idle", message: "2 game(s) idling (auto)" },
     { ts: now - 2 * 3600_000, level: "info", scope: "farming", message: "Phase 1: building playtime on 3 game(s) under 2h" },
@@ -348,12 +348,14 @@ export function createMock() {
   };
 
   const view = (a: Account) => ({ ...a });
-  const pushIdle = (sid: string) => emit("idle://status", { steamId: sid, games: idle[sid] ?? [] });
+  // A copy each time, as the real backend's messages are: the window only
+  // notices a list that is a new object.
+  const pushIdle = (sid: string) => emit("idle://status", { steamId: sid, games: [...(idle[sid] ?? [])] });
   const delay = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
   const handlers: Record<string, (a: Record<string, any>) => unknown | Promise<unknown>> = {
     get_bootstrap: (): Bootstrap => ({
-      version: "0.7",
+      version: "0.8",
       dataDir: "C:\\Users\\you\\AppData\\Roaming\\dev.idlekit.app",
       settings,
       accounts: accounts.map(view),
@@ -518,6 +520,14 @@ export function createMock() {
           },
         ]),
       );
+    },
+    set_in_list_many: ({ steamId, list, appids, on }) => {
+      const a = accounts.find((x) => x.steamId === steamId) as any;
+      if (!a) return 0;
+      a[list] = (a[list] as number[]).filter((x) => !(appids as number[]).includes(x));
+      if (on) a[list].push(...(appids as number[]));
+      emit("state://accounts", accounts);
+      return (appids as number[]).length;
     },
     set_in_list: ({ steamId, list, appid, on }) => {
       const a = accounts.find((x) => x.steamId === steamId) as any;

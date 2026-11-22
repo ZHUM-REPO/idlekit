@@ -591,7 +591,7 @@ function Unlocker({ account, running }: { account: Account; running: boolean }) 
   const games = useApp((s) => s.games[account.steamId]);
   const run = useApp((s) => s.run);
   const go = useApp((s) => s.go);
-  const now = useNow(1000);
+  const now = useNow(1000, running);
   const [busy, setBusy] = useState(false);
   const [customize, setCustomize] = useState<number | null>(null);
   const us = settings.unlocker;

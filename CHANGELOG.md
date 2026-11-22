@@ -2,6 +2,16 @@
 
 The section for the version being released becomes the text of its release page.
 
+## 0.8
+
+Speed work from the performance review. Nothing looks or behaves differently.
+
+- **The Library redraws only what changed.** Selecting a game, typing in the filter or changing a list used to redraw every tile on the page; now only the tiles whose game changed are redrawn. With 150 tiles shown, selecting a game went from 14–19 ms of work to 1–5 ms.
+- **Bulk actions are one step.** Adding many selected games to auto-idle is one command with one save, not one of each per game.
+- **A smaller, more tightly built program.** The release is now optimized across the whole program. On the Linux test build the app shrank by a quarter.
+- **Less work in the background.** The top bar and the Idling, Card farming and Achievements pages no longer redraw every second when nothing on them is counting. Each idling game's helper checks in with Steam once a second, not ten times. The Logs page draws a new line without redrawing the others.
+- **Small savings.** Text patterns used to read Steam's pages are built once and reused, and reading one setting no longer copies all of them.
+
 ## 0.7
 
 - **The window has its own title bar.** The separate Windows bar above the app is gone. Minimize, maximize and close now sit at the right end of IdleKit's top bar, and the window is moved by dragging any empty part of that bar or the logo beside it. A double click on the bar maximizes or restores the window.
