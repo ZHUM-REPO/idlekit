@@ -1,8 +1,9 @@
-import { memo, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useEffect, useMemo, useRef } from "react";
 import { Button, PageHeader, Select, TextInput, cx } from "../components/ui";
 import { api } from "../lib/api";
 import { timeOfDay } from "../lib/format";
 import { useAppIds, useHiding } from "../lib/hidden";
+import { useKept, useView } from "../lib/kept";
 import { useActiveAccount, useApp, useEnsureGames } from "../lib/store";
 import type { LogLine } from "../lib/types";
 
@@ -32,8 +33,8 @@ export function LogsPage() {
   const logs = useApp((s) => s.logs);
   const logFile = useApp((s) => s.logFile);
   const run = useApp((s) => s.run);
-  const [level, setLevel] = useState<"all" | "problems" | "debug">("all");
-  const [query, setQuery] = useState("");
+  const [level, setLevel] = useView("logsLevel");
+  const [query, setQuery] = useKept("logs.query", "");
   const end = useRef<HTMLDivElement>(null);
 
   // "Hide NSFW games": lines that name a hidden game are left out of this

@@ -23,6 +23,7 @@ import { dateText, until } from "../lib/format";
 import { HiddenNotice } from "../components/HiddenNotice";
 import { useAppIds, useHiding } from "../lib/hidden";
 import { useNow } from "../lib/hooks";
+import { useKept } from "../lib/kept";
 import { useActiveAccount, useApp, useEnsureGames } from "../lib/store";
 import type { AchItem, AchView, Account, GameEntry, StatItem } from "../lib/types";
 
@@ -30,7 +31,7 @@ type Tab = "manager" | "unlocker";
 
 export function AchievementsPage() {
   const account = useActiveAccount();
-  const [tab, setTab] = useState<Tab>("manager");
+  const [tab, setTab] = useKept<Tab>("achievements.tab", "manager");
   const unlock = useApp((s) => (account ? s.unlock[account.steamId] : undefined));
   if (!account) return null;
   return (
@@ -71,7 +72,7 @@ function Manager({ account }: { account: Account }) {
   const games = useApp((s) => s.games[account.steamId]);
   const achAppid = useApp((s) => s.achAppid);
   const go = useApp((s) => s.go);
-  const [query, setQuery] = useState("");
+  const [query, setQuery] = useKept("achievements.findGame", "");
   useEnsureGames(account.steamId);
   const hiding = useHiding(useAppIds(games));
 
@@ -138,7 +139,7 @@ function GamePanel({ account, game }: { account: Account; game: GameEntry }) {
   const [view, setView] = useState<AchView | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
-  const [sub, setSub] = useState<"achievements" | "stats">("achievements");
+  const [sub, setSub] = useKept<"achievements" | "stats">("achievements.sub", "achievements");
 
   const load = async () => {
     if (!account.localActive) return;
@@ -245,8 +246,8 @@ function AchievementList({
   onChanged: () => Promise<void>;
 }) {
   const [pending, setPending] = useState<Record<string, boolean>>({});
-  const [filter, setFilter] = useState<"all" | "locked" | "unlocked">("all");
-  const [query, setQuery] = useState("");
+  const [filter, setFilter] = useKept<"all" | "locked" | "unlocked">("achievements.filter", "all");
+  const [query, setQuery] = useKept("achievements.find", "");
   const [busy, setBusy] = useState(false);
   const [confirmReset, setConfirmReset] = useState(false);
   const run = useApp((s) => s.run);

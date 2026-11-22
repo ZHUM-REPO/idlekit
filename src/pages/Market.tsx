@@ -5,10 +5,9 @@ import { api } from "../lib/api";
 import { HiddenNotice } from "../components/HiddenNotice";
 import { US_DOLLAR_WALLET, money, sellerReceives } from "../lib/format";
 import { useAppIds, useHiding } from "../lib/hidden";
+import { useKept, useView } from "../lib/kept";
 import { useActiveAccount, useApp, useEnsureGames } from "../lib/store";
 import type { Account, InvItem, Listing, PriceInfo, Wallet } from "../lib/types";
-
-type ClassFilter = "all" | InvItem["class"];
 
 const CLASS_LABEL: Record<InvItem["class"], string> = {
   card: "Trading card",
@@ -22,7 +21,7 @@ const CLASS_LABEL: Record<InvItem["class"], string> = {
 
 export function MarketPage() {
   const account = useActiveAccount();
-  const [tab, setTab] = useState<"inventory" | "listings">("inventory");
+  const [tab, setTab] = useView("marketTab");
   const go = useApp((s) => s.go);
   if (!account) return null;
   const noWeb = !account.hasToken && !account.hasCookie;
@@ -106,8 +105,8 @@ function Inventory({ account }: { account: Account }) {
   const [qty, setQty] = useState<Record<string, number>>({});
   const [price, setPrice] = useState<Record<string, string>>({});
   const [selected, setSelected] = useState<Set<string>>(new Set());
-  const [filter, setFilter] = useState<ClassFilter>("all");
-  const [query, setQuery] = useState("");
+  const [filter, setFilter] = useView("marketFilter");
+  const [query, setQuery] = useKept("market.query", "");
   const [busy, setBusy] = useState<string | null>(null);
   const [confirm, setConfirm] = useState(false);
 

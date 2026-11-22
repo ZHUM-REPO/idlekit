@@ -24,6 +24,15 @@ export interface UnlockerSettings {
   importedTimeScale: number;
 }
 
+/** How pages were left, saved so they come back the same after a restart. */
+export interface ViewSettings {
+  libraryFilter: "all" | "favorites" | "idling" | "unplayed" | "manual";
+  librarySort: "name" | "playtime" | "recent";
+  marketTab: "inventory" | "listings";
+  marketFilter: "all" | "card" | "foil" | "emoticon" | "background" | "booster" | "gems" | "other";
+  logsLevel: "all" | "problems" | "debug";
+}
+
 export interface MarketSettings {
   strategy: "undercutLowest" | "matchLowest" | "aboveHighestBuy";
   undercutCents: number;
@@ -55,6 +64,7 @@ export interface Settings {
   farming: FarmingSettings;
   unlocker: UnlockerSettings;
   market: MarketSettings;
+  views: ViewSettings;
 }
 
 export interface ImportedTiming {

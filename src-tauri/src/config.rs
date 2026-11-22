@@ -72,6 +72,35 @@ impl Default for UnlockerSettings {
     }
 }
 
+/// How pages were left, so they come back the same after a restart. The window
+/// decides what each may be and falls back to its default for anything else.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase", default)]
+pub struct ViewSettings {
+    /// Library: which games are shown.
+    pub library_filter: String,
+    /// Library: what the games are sorted by.
+    pub library_sort: String,
+    /// Market: "inventory" | "listings".
+    pub market_tab: String,
+    /// Market inventory: which kind of item is shown.
+    pub market_filter: String,
+    /// Logs: which lines are shown.
+    pub logs_level: String,
+}
+
+impl Default for ViewSettings {
+    fn default() -> Self {
+        Self {
+            library_filter: "all".into(),
+            library_sort: "name".into(),
+            market_tab: "inventory".into(),
+            market_filter: "all".into(),
+            logs_level: "all".into(),
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase", default)]
 pub struct MarketSettings {
@@ -126,6 +155,7 @@ pub struct Settings {
     pub farming: FarmingSettings,
     pub unlocker: UnlockerSettings,
     pub market: MarketSettings,
+    pub views: ViewSettings,
 }
 
 impl Default for Settings {
@@ -148,6 +178,7 @@ impl Default for Settings {
             farming: FarmingSettings::default(),
             unlocker: UnlockerSettings::default(),
             market: MarketSettings::default(),
+            views: ViewSettings::default(),
         }
     }
 }
@@ -324,5 +355,29 @@ mod tests {
         assert!(changes.contains(&format!("farming.checkMinutes: {} → {}", before.farming.check_minutes, after.farming.check_minutes)));
         assert!(changes.contains(&"idleStatusText: changed".to_string()));
         assert!(!changes.iter().any(|c| c.contains("private")));
+    }
+
+    #[test]
+    fn how_pages_were_left_is_saved_with_the_settings() {
+        // settings saved before this existed: every page starts as it always did
+        let old: Settings = serde_json::from_str(r#"{"theme":"midnight","hideNsfw":true}"#).unwrap();
+        assert_eq!(
+            (old.views.library_filter.as_str(), old.views.library_sort.as_str(), old.views.market_tab.as_str()),
+            ("all", "name", "inventory")
+        );
+        assert_eq!((old.views.market_filter.as_str(), old.views.logs_level.as_str()), ("all", "all"));
+        assert_eq!(old.theme, "midnight");
+
+        // some choices saved, the rest keep their defaults
+        let saved: Settings = serde_json::from_str(r#"{"views":{"librarySort":"playtime","logsLevel":"problems"}}"#).unwrap();
+        assert_eq!((saved.views.library_sort.as_str(), saved.views.logs_level.as_str()), ("playtime", "problems"));
+        assert_eq!(saved.views.library_filter, "all");
+
+        // written back under the same names, and a change is named in the log
+        let json = serde_json::to_value(&saved).unwrap();
+        assert_eq!(json["views"]["librarySort"], "playtime");
+        assert_eq!(json["views"]["marketTab"], "inventory");
+        let changes = setting_changes(&Settings::default(), &saved);
+        assert!(changes.contains(&"views.librarySort: \"name\" → \"playtime\"".to_string()), "{changes:?}");
     }
 }

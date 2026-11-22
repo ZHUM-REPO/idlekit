@@ -2,6 +2,12 @@
 
 The section for the version being released becomes the text of its release page.
 
+## 1.4
+
+- **Pages come back as you left them.** Opening another page used to reset a page to its defaults: the Library went back to “All games” sorted by “Name”, the Market to its Inventory tab, the Logs to everything.
+- **Saved across restarts:** the Library's filter and sort, the Market's tab and item filter, and the Logs page's level. They are kept with the settings.
+- **Kept until IdleKit closes:** search text on every page, the Library's “Only NSFW games”, and on the Achievements page the Manager or Unlocker tab, the achievements or stats view and the locked or unlocked filter. A fresh start clears these, so a search or the NSFW games don't come up by surprise.
+
 ## 1.3
 
 - **An NSFW box in the Library**, beside the sort box, with three choices:

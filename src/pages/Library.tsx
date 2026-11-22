@@ -7,11 +7,10 @@ import { api } from "../lib/api";
 import { clock, hoursText } from "../lib/format";
 import { useNow } from "../lib/hooks";
 import { useAppIds, useHiding } from "../lib/hidden";
+import { useKept, useView } from "../lib/kept";
 import { EMPTY, useActiveAccount, useApp } from "../lib/store";
 import type { Account, GameEntry, IdleGame } from "../lib/types";
 
-type Filter = "all" | "favorites" | "unplayed" | "manual" | "idling";
-type Sort = "name" | "playtime" | "recent";
 /** The NSFW box beside the sort box: the "Hide NSFW games" setting, or a look at just those games. */
 type Nsfw = "hide" | "show" | "only";
 const PAGE = 150;
@@ -27,9 +26,11 @@ export function LibraryPage() {
   const run = useApp((s) => s.run);
   const go = useApp((s) => s.go);
 
-  const [query, setQuery] = useState("");
-  const [filter, setFilter] = useState<Filter>("all");
-  const [sort, setSort] = useState<Sort>("name");
+  // How the page was left: the search for as long as IdleKit runs, the
+  // filter and the sort across restarts too.
+  const [query, setQuery] = useKept("library.query", "");
+  const [filter, setFilter] = useView("libraryFilter");
+  const [sort, setSort] = useView("librarySort");
   const [limit, setLimit] = useState(PAGE);
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [adding, setAdding] = useState(false);
@@ -46,7 +47,7 @@ export function LibraryPage() {
   // "Only NSFW games" is a look at just those games on this page, for as long
   // as the page is open; it changes nothing about the setting.
   const saveSettings = useApp((s) => s.saveSettings);
-  const [onlyNsfw, setOnlyNsfw] = useState(false);
+  const [onlyNsfw, setOnlyNsfw] = useKept("library.onlyNsfw", false);
   const hiding = useHiding(useAppIds(games), onlyNsfw);
   const nsfw: Nsfw = onlyNsfw ? "only" : hiding.on ? "hide" : "show";
   const listed = useMemo(() => {
