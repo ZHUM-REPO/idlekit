@@ -2,6 +2,12 @@
 
 The section for the version being released becomes the text of its release page.
 
+## 1.3
+
+- **An NSFW box in the Library**, beside the sort box, with three choices:
+  - **NSFW games hidden** and **NSFW games shown** switch “Hide NSFW games” on and off, the same setting as the switch in Settings, so it applies to every page.
+  - **Only NSFW games** shows just the games Steam labels “Adult Only Sexual Content” or “Frequent Nudity or Sexual Content”, to see which ones they are. It is a look at the Library only: the setting stays as it was, and the box goes back to it when you leave the page.
+
 ## 1.2
 
 - **Games shown as “App 1030300” now get their names.** An account that uses the Steam client on this PC, with no web sign-in, gets its games list from Steam's files. Those name the games that are installed, but list a game that was played and is no longer installed by its number only, and Refresh read the same files again. IdleKit now asks Steam's store for the names of those games, with the lookup that already finds their covers, so it needs no sign-in. The names appear a moment after the list the first time and are kept after that.

@@ -12,6 +12,8 @@ import type { Account, GameEntry, IdleGame } from "../lib/types";
 
 type Filter = "all" | "favorites" | "unplayed" | "manual" | "idling";
 type Sort = "name" | "playtime" | "recent";
+/** The NSFW box beside the sort box: the "Hide NSFW games" setting, or a look at just those games. */
+type Nsfw = "hide" | "show" | "only";
 const PAGE = 150;
 
 export function LibraryPage() {
@@ -41,11 +43,26 @@ export function LibraryPage() {
 
   const idleMap = useMemo(() => new Map(idle.map((g) => [g.appid, g])), [idle]);
   // "Hide NSFW games": what stays out of the grid, the count and the selection.
-  const hiding = useHiding(useAppIds(games));
-  const listed = useMemo(() => (games && hiding.on ? games.filter((g) => !hiding.hides(g.appid)) : games), [games, hiding]);
+  // "Only NSFW games" is a look at just those games on this page, for as long
+  // as the page is open; it changes nothing about the setting.
+  const saveSettings = useApp((s) => s.saveSettings);
+  const [onlyNsfw, setOnlyNsfw] = useState(false);
+  const hiding = useHiding(useAppIds(games), onlyNsfw);
+  const nsfw: Nsfw = onlyNsfw ? "only" : hiding.on ? "hide" : "show";
+  const listed = useMemo(() => {
+    if (!games) return games;
+    if (onlyNsfw) return games.filter((g) => hiding.labelled(g.appid));
+    return hiding.on ? games.filter((g) => !hiding.hides(g.appid)) : games;
+  }, [games, hiding, onlyNsfw]);
   useEffect(() => {
-    if (hiding.on) setSelected(new Set());
-  }, [hiding.on]);
+    setSelected(new Set());
+  }, [nsfw]);
+  const chooseNsfw = (v: Nsfw) => {
+    setOnlyNsfw(v === "only");
+    setLimit(PAGE);
+    if (v !== "only" && (v === "hide") !== hiding.on) void saveSettings({ hideNsfw: v === "hide" });
+  };
+  const waitingForSteam = hiding.checking + hiding.unanswered;
   const favorites = account?.favorites;
   const favSet = useMemo(() => new Set(favorites ?? []), [favorites]);
   const steamId = account?.steamId;
@@ -183,6 +200,16 @@ export function LibraryPage() {
             { value: "recent", label: "Recently played" },
           ]}
         />
+        <Select
+          label="NSFW games"
+          value={nsfw}
+          onChange={chooseNsfw}
+          options={[
+            { value: "hide", label: "NSFW games hidden" },
+            { value: "show", label: "NSFW games shown" },
+            { value: "only", label: "Only NSFW games" },
+          ]}
+        />
       </div>
 
       {error && (
@@ -202,15 +229,32 @@ export function LibraryPage() {
         </div>
       )}
 
-      <HiddenNotice hiding={hiding} />
+      {onlyNsfw ? (
+        waitingForSteam > 0 && (
+          <p className="mb-4 flex flex-wrap items-center gap-3 text-[13px] text-muted" role="status">
+            {hiding.unanswered > 0
+              ? `Steam couldn't be asked about ${hiding.unanswered.toLocaleString()} ${hiding.unanswered === 1 ? "game" : "games"}, so some may be missing here.`
+              : `Asking Steam about ${hiding.checking.toLocaleString()} ${hiding.checking === 1 ? "game" : "games"}…`}
+            {hiding.unanswered > 0 && (
+              <Button size="sm" onClick={hiding.retry}>
+                Ask again
+              </Button>
+            )}
+          </p>
+        )
+      ) : (
+        <HiddenNotice hiding={hiding} />
+      )}
 
-      {games && shown.length === 0 && !error && !(hiding.checking + hiding.unanswered > 0 && listed?.length === 0) && (
+      {games && shown.length === 0 && !error && !(waitingForSteam > 0 && listed?.length === 0) && (
         <Empty
-          title={query || filter !== "all" ? "No games match" : "No games yet"}
+          title={query || filter !== "all" ? "No games match" : onlyNsfw ? "No NSFW games" : "No games yet"}
           body={
             query || filter !== "all"
               ? "Try a different search or filter."
-              : "Refresh to load your library, or add a game by its AppID (the number in its store page URL)."
+              : onlyNsfw
+                ? "Steam labels none of this account's games “Adult Only Sexual Content” or “Frequent Nudity or Sexual Content”."
+                : "Refresh to load your library, or add a game by its AppID (the number in its store page URL)."
           }
         />
       )}

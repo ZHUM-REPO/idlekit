@@ -15,6 +15,8 @@ export interface Hiding {
   on: boolean;
   /** Whether this game must stay out of sight. Always false with the setting off. */
   hides: (appid: number) => boolean;
+  /** Whether Steam labels this game as one the setting hides. Known only while labels are being read. */
+  labelled: (appid: number) => boolean;
   /** Of the games given: how many Steam hasn't answered for yet, so they aren't shown. */
   checking: number;
   /** Of the games given: how many Steam couldn't be asked about, so they aren't shown. */
@@ -23,7 +25,7 @@ export interface Hiding {
   retry: () => void;
 }
 
-const SHOW_ALL: Hiding = { on: false, hides: () => false, checking: 0, unanswered: 0, retry: () => {} };
+const SHOW_ALL: Hiding = { on: false, hides: () => false, labelled: () => false, checking: 0, unanswered: 0, retry: () => {} };
 const NOTHING: Record<number, GameArtUrls | null> = {};
 /** How often to ask again by itself while some games are still unanswered. */
 const ASK_AGAIN_MS = 2 * 60_000 + 5_000;
@@ -35,24 +37,27 @@ function cleared(entry: GameArtUrls | null | undefined): boolean {
 
 /**
  * What the setting hides. Pass the app ids a page lists (a stable array, e.g.
- * from useMemo) and Steam is asked about the ones not known yet.
+ * from useMemo) and Steam is asked about the ones not known yet. `wanted`
+ * reads the labels with the setting off too, for a page that shows which
+ * games carry them.
  */
-export function useHiding(appids?: readonly number[]): Hiding {
+export function useHiding(appids?: readonly number[], wanted = false): Hiding {
   const on = useApp((s) => !!s.settings?.hideNsfw);
-  // With the setting off, a page doesn't redraw when lookups come in.
-  const byApp = useArtStore((s) => (on ? s.byApp : NOTHING));
+  const reading = on || wanted;
+  // With nothing to read, a page doesn't redraw when lookups come in.
+  const byApp = useArtStore((s) => (reading ? s.byApp : NOTHING));
 
   useEffect(() => {
-    if (!on || !appids) return;
+    if (!reading || !appids) return;
     // Cheap for games already asked about; runs again as answers arrive, so
     // ones forgotten after a lost connection are asked about again.
     for (const id of appids) requestArt(id);
-  }, [on, appids, byApp]);
+  }, [reading, appids, byApp]);
 
   const counts = useMemo(() => {
     let checking = 0;
     let unanswered = 0;
-    if (on && appids) {
+    if (reading && appids) {
       for (const id of new Set(appids)) {
         const entry = byApp[id];
         if (entry === undefined) checking++;
@@ -60,26 +65,27 @@ export function useHiding(appids?: readonly number[]): Hiding {
       }
     }
     return { checking, unanswered };
-  }, [on, appids, byApp]);
+  }, [reading, appids, byApp]);
 
   const waiting = counts.unanswered > 0;
   useEffect(() => {
-    if (!on || !appids || !waiting) return;
+    if (!reading || !appids || !waiting) return;
     const id = setInterval(() => {
       for (const appid of appids) requestArt(appid);
     }, ASK_AGAIN_MS);
     return () => clearInterval(id);
-  }, [on, appids, waiting]);
+  }, [reading, appids, waiting]);
 
   return useMemo(() => {
-    if (!on) return SHOW_ALL;
+    if (!reading) return SHOW_ALL;
     return {
       on,
-      hides: (appid: number) => !cleared(byApp[appid]),
+      hides: on ? (appid: number) => !cleared(byApp[appid]) : SHOW_ALL.hides,
+      labelled: (appid: number) => byApp[appid]?.nsfw === true,
       ...counts,
       retry: () => appids && retryArt(appids),
     };
-  }, [on, byApp, counts, appids]);
+  }, [on, reading, byApp, counts, appids]);
 }
 
 /** A stable list of the app ids in `items`, for useHiding. */
