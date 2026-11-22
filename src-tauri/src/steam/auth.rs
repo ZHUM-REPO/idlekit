@@ -1,7 +1,7 @@
 //! Interactive sign-in: QR code (via Steam's HTTPS auth API) and
 //! username/password + Steam Guard (via a CM connection, using steam-vent).
 //! Both produce a long-lived refresh token, stored with `secrets`.
-use super::{jwt, webapi};
+use super::{cm, jwt, webapi};
 use crate::{logbus, secrets};
 use anyhow::Result;
 use serde::Serialize;
@@ -13,7 +13,7 @@ use steam_vent::auth::{
     UserProvidedAuthConfirmationHandler,
 };
 use steam_vent::connection::UnAuthenticatedConnection;
-use steam_vent::{Connection, ConnectionError, ServerList};
+use steam_vent::{Connection, ConnectionError};
 use tokio::io::{AsyncWriteExt, DuplexStream};
 
 #[derive(Serialize, Clone, Debug, Default)]
@@ -129,6 +129,12 @@ fn friendly_login_error(e: &ConnectionError) -> String {
 }
 
 impl AuthSessions {
+    /// Whether a sign-in is under way: a QR code on screen, or a password
+    /// sign-in waiting for its Steam Guard code.
+    pub fn in_progress(&self) -> bool {
+        !self.map.lock().unwrap().is_empty()
+    }
+
     pub fn cancel(&self, session_id: &str) {
         if let Some(ctl) = self.map.lock().unwrap().remove(session_id) {
             ctl.cancelled.store(true, std::sync::atomic::Ordering::SeqCst);
@@ -184,8 +190,14 @@ impl AuthSessions {
     }
 
     /// Username + password sign-in with Steam Guard handled through the UI.
-    pub fn start_credentials<F>(self: &Arc<Self>, session_id: String, username: String, password: String, on_done: F)
-    where
+    pub fn start_credentials<F>(
+        self: &Arc<Self>,
+        cm: Arc<cm::CmManager>,
+        session_id: String,
+        username: String,
+        password: String,
+        on_done: F,
+    ) where
         F: FnOnce(SignedIn) -> futures_util::future::BoxFuture<'static, Result<()>> + Send + 'static,
     {
         let (code_tx, code_rx) = tokio::io::duplex(256);
@@ -205,11 +217,15 @@ impl AuthSessions {
                 inner: UserProvidedAuthConfirmationHandler::new(code_rx, tokio::io::sink()),
             };
             let attempt = async {
-                let servers = ServerList::discover()
+                // Reaching Steam gets its own time limit: the 10 minutes below
+                // are for finding a Steam Guard code, not for a connection that hangs.
+                let reach = async {
+                    let servers = cm.servers().await?;
+                    UnAuthenticatedConnection::connect(&servers).await
+                };
+                let unauth = tokio::time::timeout(cm::OPEN_TIMEOUT, reach)
                     .await
-                    .map_err(|e| anyhow::anyhow!("Could not reach Steam: {e}"))?;
-                let unauth = UnAuthenticatedConnection::connect(&servers)
-                    .await
+                    .map_err(|_| anyhow::anyhow!("Could not reach Steam: no answer within {} seconds", cm::OPEN_TIMEOUT.as_secs()))?
                     .map_err(|e| anyhow::anyhow!("Could not reach Steam: {e}"))?;
                 unauth
                     .login(&username, &password, SecretGuardStore, handler)

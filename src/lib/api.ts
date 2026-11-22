@@ -83,6 +83,10 @@ export interface EventMap {
   "window://close-requested": null;
   /** The tray menu asks the window to show a page. */
   "app://navigate": string;
+  /** Achievement lists closed because the window went to the tray: their app ids. */
+  "ach://closed": number[];
+  /** The window came back from the tray (or from being minimized). */
+  "window://shown": null;
 }
 
 export async function on<K extends keyof EventMap>(event: K, cb: (payload: EventMap[K]) => void): Promise<UnlistenFn> {

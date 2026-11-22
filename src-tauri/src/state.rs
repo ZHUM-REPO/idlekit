@@ -56,7 +56,11 @@ pub struct Inner {
     pub pictures: Pictures,
     /// What is known about newer versions of IdleKit.
     pub updates: crate::updates::Updates,
-    web: tokio::sync::Mutex<HashMap<String, Arc<WebSession>>>,
+    /// Web sessions by account. Only held to look one up or put one in: a
+    /// refresh, which goes over the network, never holds it.
+    web: Mutex<HashMap<String, Arc<WebSession>>>,
+    /// One refresh at a time per account, so a slow one holds up no other account.
+    web_refresh: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     games: Mutex<HashMap<String, Vec<GameEntry>>>,
     /// What Steam's store calls games, by app id: for the ones that the files
     /// on this PC list by number only.
@@ -65,6 +69,8 @@ pub struct Inner {
     naming: Mutex<HashMap<String, Instant>>,
     /// appids with an open Achievement Manager view (keeps their helper alive)
     pub ach_open: Mutex<HashSet<u32>>,
+    /// Each game's global unlock rates, and when they were fetched.
+    ach_percents: Mutex<HashMap<u32, (Instant, Arc<HashMap<String, f64>>)>>,
     pub market_cancel: AtomicBool,
     /// How many market jobs (pricing, listing, removing) are under way.
     pub market_busy: AtomicUsize,
@@ -94,6 +100,7 @@ impl App {
     pub fn new(data_dir: PathBuf, pictures_dir: PathBuf) -> Self {
         let config = Config::load(&data_dir);
         let art = ArtResolver::new(&data_dir);
+        let cm = CmManager::new(Some(data_dir.join(crate::steam::cm::SERVERS_FILE)), webapi::http_client());
         Self(Arc::new(Inner {
             data_dir,
             art,
@@ -102,16 +109,18 @@ impl App {
             config: Mutex::new(config),
             http: webapi::http_client(),
             helpers: Arc::new(HelperManager::default()),
-            cm: Arc::new(CmManager::default()),
+            cm: Arc::new(cm),
             auth: Arc::new(AuthSessions::default()),
             idler: Idler::default(),
             farming: FarmingManager::default(),
             unlocker: UnlockerManager::default(),
-            web: tokio::sync::Mutex::new(HashMap::new()),
+            web: Mutex::new(HashMap::new()),
+            web_refresh: Mutex::new(HashMap::new()),
             games: Mutex::new(HashMap::new()),
             store_names: Mutex::new(HashMap::new()),
             naming: Mutex::new(HashMap::new()),
             ach_open: Mutex::new(HashSet::new()),
+            ach_percents: Mutex::new(HashMap::new()),
             market_cancel: AtomicBool::new(false),
             market_busy: AtomicUsize::new(0),
         }))
@@ -193,26 +202,83 @@ impl App {
         }
     }
 
+    // ------------------------------------------------------ achievements --
+
+    /// Closes a game's achievements view. Its helper stops, unless the game
+    /// is idling (the unlocker counts as idling too).
+    pub async fn close_achievements(&self, appid: u32) {
+        self.ach_open.lock().unwrap().remove(&appid);
+        if !self.idler.anyone_idling(appid) {
+            self.helpers.stop(appid).await;
+        }
+    }
+
+    /// Closes every open achievements view, as the window goes to the tray:
+    /// an open view keeps its game running in Steam, with nobody to see it.
+    /// The window is told which ones, and opens them again when it comes back.
+    pub async fn close_all_achievements(&self) {
+        let open: Vec<u32> = self.ach_open.lock().unwrap().drain().collect();
+        if open.is_empty() {
+            return;
+        }
+        for &appid in &open {
+            if !self.idler.anyone_idling(appid) {
+                self.helpers.stop(appid).await;
+            }
+        }
+        logbus::info("achievements", format!("Closed {} open achievement list(s) while IdleKit is in the tray", open.len()));
+        logbus::emit("ach://closed", open);
+    }
+
+    /// How many players have each of a game's achievements. Kept for an hour,
+    /// so opening the same game again doesn't ask Steam again; a failed
+    /// download is not kept, so the next open tries again.
+    pub async fn achievement_percents(&self, appid: u32) -> Arc<HashMap<String, f64>> {
+        const FRESH: Duration = Duration::from_secs(60 * 60);
+        if let Some((at, kept)) = self.ach_percents.lock().unwrap().get(&appid) {
+            if at.elapsed() < FRESH {
+                return kept.clone();
+            }
+        }
+        match webapi::global_achievement_percentages(&self.http, appid).await {
+            Ok(percents) => {
+                let percents = Arc::new(percents);
+                self.ach_percents.lock().unwrap().insert(appid, (Instant::now(), percents.clone()));
+                percents
+            }
+            Err(_) => Arc::default(),
+        }
+    }
+
     // ------------------------------------------------------- web session --
 
     pub async fn seed_web_session(&self, steam_id: &str, access_token: &str) {
         if let Ok(ws) = WebSession::from_access_token(steam_id, access_token) {
-            self.web.lock().await.insert(steam_id.to_string(), Arc::new(ws));
+            self.web.lock().unwrap().insert(steam_id.to_string(), Arc::new(ws));
         }
     }
 
     pub async fn forget_web_session(&self, steam_id: &str) {
-        self.web.lock().await.remove(steam_id);
+        self.web.lock().unwrap().remove(steam_id);
+    }
+
+    /// The session kept for this account, unless its access token is about to run out.
+    fn kept_web_session(&self, steam_id: &str) -> Option<Arc<WebSession>> {
+        let web = self.web.lock().unwrap();
+        web.get(steam_id).filter(|ws| ws.access_token.is_empty() || !jwt::expires_soon(&ws.access_token, 600)).cloned()
     }
 
     /// A signed-in community/store session for this account, refreshing the
     /// access token from the saved refresh token when it is close to expiry.
     pub async fn web_session(&self, steam_id: &str) -> Result<Arc<WebSession>> {
-        let mut cache = self.web.lock().await;
-        if let Some(ws) = cache.get(steam_id) {
-            if ws.access_token.is_empty() || !jwt::expires_soon(&ws.access_token, 600) {
-                return Ok(ws.clone());
-            }
+        if let Some(ws) = self.kept_web_session(steam_id) {
+            return Ok(ws);
+        }
+        let gate = self.web_refresh.lock().unwrap().entry(steam_id.to_string()).or_default().clone();
+        let _refreshing = gate.lock().await;
+        // Another caller may have refreshed it while this one waited.
+        if let Some(ws) = self.kept_web_session(steam_id) {
+            return Ok(ws);
         }
         let ws = if let Some(refresh) = secrets::get(&secrets::refresh_token_key(steam_id)) {
             let sid: u64 = steam_id.parse()?;
@@ -257,7 +323,7 @@ impl App {
             bail!("This account has no web session. In Accounts, sign in with QR/password or paste a steamLoginSecure cookie.");
         };
         let ws = Arc::new(ws);
-        cache.insert(steam_id.to_string(), ws.clone());
+        self.web.lock().unwrap().insert(steam_id.to_string(), ws.clone());
         Ok(ws)
     }
 

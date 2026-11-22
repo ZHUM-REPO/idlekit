@@ -271,23 +271,61 @@ impl Config {
         dir.join("config.json")
     }
 
+    /// The settings as saved the time before: kept for when `config.json`
+    /// can't be read, or is missing because a save was cut short.
+    pub const BACKUP: &'static str = "config.json.bak";
+
+    fn read(path: &Path) -> Option<Result<Config, serde_json::Error>> {
+        let text = std::fs::read_to_string(path).ok()?;
+        Some(serde_json::from_str(&text))
+    }
+
     pub fn load(dir: &Path) -> Config {
         let path = Self::path(dir);
-        match std::fs::read_to_string(&path) {
-            Ok(text) => serde_json::from_str(&text).unwrap_or_else(|e| {
-                crate::logbus::warn("config", format!("config.json unreadable ({e}); starting fresh"));
+        let backup = || Self::read(&dir.join(Self::BACKUP)).and_then(Result::ok);
+        match Self::read(&path) {
+            Some(Ok(config)) => config,
+            Some(Err(e)) => {
                 let _ = std::fs::copy(&path, dir.join("config.broken.json"));
-                Config::default()
-            }),
-            Err(_) => Config { version: 1, ..Default::default() },
+                match backup() {
+                    Some(config) => {
+                        crate::logbus::warn("config", format!("config.json unreadable ({e}); using the copy saved before it"));
+                        config
+                    }
+                    None => {
+                        crate::logbus::warn("config", format!("config.json unreadable ({e}); starting fresh"));
+                        Config::default()
+                    }
+                }
+            }
+            None => match backup() {
+                Some(config) => {
+                    crate::logbus::warn("config", "config.json was missing; using the copy saved before it");
+                    config
+                }
+                None => Config { version: 1, ..Default::default() },
+            },
         }
     }
 
+    /// Writes the settings so that no moment leaves them unreadable: the new
+    /// file is on disk in full before it takes the old one's place, and the
+    /// old one stays as [`Self::BACKUP`]. A power cut at any point leaves
+    /// either the new settings or the ones before.
     pub fn save(&self, dir: &Path) -> anyhow::Result<()> {
+        use std::io::Write;
         std::fs::create_dir_all(dir)?;
+        let path = Self::path(dir);
         let tmp = dir.join("config.json.tmp");
-        std::fs::write(&tmp, serde_json::to_vec_pretty(self)?)?;
-        std::fs::rename(&tmp, Self::path(dir))?;
+        {
+            let mut file = std::fs::File::create(&tmp)?;
+            file.write_all(&serde_json::to_vec_pretty(self)?)?;
+            file.sync_all()?;
+        }
+        if path.exists() {
+            let _ = std::fs::rename(&path, dir.join(Self::BACKUP));
+        }
+        std::fs::rename(&tmp, &path)?;
         Ok(())
     }
 
@@ -344,6 +382,35 @@ pub fn setting_changes(before: &Settings, after: &Settings) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn settings_survive_a_save_cut_short() {
+        let dir = std::env::temp_dir().join(format!("idlekit-config-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let named = |name: &str| Config {
+            version: 1,
+            active_account: Some(name.into()),
+            ..Default::default()
+        };
+        let active = |c: Config| c.active_account.unwrap_or_default();
+        named("first").save(&dir).unwrap();
+        named("second").save(&dir).unwrap();
+        assert_eq!(active(Config::load(&dir)), "second");
+        assert_eq!(active(Config::read(&dir.join(Config::BACKUP)).unwrap().unwrap()), "first");
+        assert!(!dir.join("config.json.tmp").exists());
+
+        // A power cut that left the file empty: the copy from before is used.
+        std::fs::write(Config::path(&dir), b"").unwrap();
+        assert_eq!(active(Config::load(&dir)), "first");
+        assert!(dir.join("config.broken.json").exists());
+        // A save cut short between its two steps: no config.json at all.
+        std::fs::remove_file(Config::path(&dir)).unwrap();
+        assert_eq!(active(Config::load(&dir)), "first");
+        // A first start has neither.
+        std::fs::remove_file(dir.join(Config::BACKUP)).unwrap();
+        assert_eq!(Config::load(&dir).active_account, None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn setting_changes_name_each_setting_that_moved() {

@@ -1,5 +1,5 @@
 import { ArrowDown, ArrowUp, EyeOff, Lock, Play, Plus, RotateCcw, Search, ShieldLock, Square, X } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { GameArt, GameIcon } from "../components/GameArt";
 import { Odometer } from "../components/Odometer";
 import {
@@ -18,7 +18,7 @@ import {
   cx,
   inputClass,
 } from "../components/ui";
-import { api, errorText } from "../lib/api";
+import { api, errorText, on } from "../lib/api";
 import { dateText, until } from "../lib/format";
 import { HiddenNotice } from "../components/HiddenNotice";
 import { useAppIds, useHiding } from "../lib/hidden";
@@ -135,6 +135,31 @@ function Manager({ account }: { account: Account }) {
   );
 }
 
+/**
+ * An open achievements list keeps its game running in Steam, so it is closed
+ * while IdleKit sits in the tray. This opens it again when the window is back.
+ */
+function useReopenAfterTray(appid: number, reopen: () => void) {
+  const closed = useRef(false);
+  const latest = useRef(reopen);
+  latest.current = reopen;
+  useEffect(() => {
+    const offs = [
+      on("ach://closed", (appids) => {
+        if (appids.includes(appid)) closed.current = true;
+      }),
+      on("window://shown", () => {
+        if (!closed.current) return;
+        closed.current = false;
+        latest.current();
+      }),
+    ];
+    return () => {
+      for (const off of offs) void off.then((stop) => stop());
+    };
+  }, [appid]);
+}
+
 function GamePanel({ account, game }: { account: Account; game: GameEntry }) {
   const [view, setView] = useState<AchView | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -159,6 +184,7 @@ function GamePanel({ account, game }: { account: Account; game: GameEntry }) {
     return () => void api.achClose(game.appid).catch(() => undefined);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [game.appid, account.localActive]);
+  useReopenAfterTray(game.appid, () => void load());
 
   const inQueue = account.unlockQueue.includes(game.appid);
   const unlocked = view?.achievements.filter((a) => a.achieved).length ?? 0;
@@ -785,7 +811,7 @@ function CustomizeModal({
   const run = useApp((s) => s.run);
   const imported = account.unlockImported[String(appid)] ?? [];
 
-  useEffect(() => {
+  const open = useCallback(() => {
     api
       .achOpen(account.steamId, appid)
       .then((v) => {
@@ -798,8 +824,12 @@ function CustomizeModal({
         });
       })
       .catch((e) => setError(errorText(e)));
-    return () => void api.achClose(appid).catch(() => undefined);
   }, [account.steamId, appid]);
+  useEffect(() => {
+    open();
+    return () => void api.achClose(appid).catch(() => undefined);
+  }, [open, appid]);
+  useReopenAfterTray(appid, open);
 
   const byName = new Map(view?.achievements.map((a) => [a.apiName, a]) ?? []);
   const move = (i: number, d: -1 | 1) => {

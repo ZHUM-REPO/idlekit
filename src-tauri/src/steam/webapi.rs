@@ -63,6 +63,8 @@ pub fn eresult_name(e: i32) -> &'static str {
 pub fn http_client() -> reqwest::Client {
     reqwest::Client::builder()
         .user_agent(UA_BROWSER)
+        // A connection that can't be opened fails in seconds, not at the end of the 30.
+        .connect_timeout(std::time::Duration::from_secs(10))
         .timeout(std::time::Duration::from_secs(30))
         .build()
         .expect("http client")

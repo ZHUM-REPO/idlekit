@@ -2,6 +2,40 @@
 
 The section for the version being released becomes the text of its release page.
 
+## 1.6
+
+Fixes from a review of the whole app, for card farming above all.
+
+**Card farming**
+
+- **A game Steam won't start is tried again.** It used to be skipped for the rest of the run. Now the next game is farmed meanwhile, and the one that failed gets two more tries, two minutes apart.
+- **One game's card page can't stop the run any more.** When a game's card page kept failing, the whole run stopped after five checks with "the web session may have expired". Now IdleKit looks at your badge page to tell the two apart: when Steam answers that one, only the game whose page fails is set aside, after three checks, and the others are farmed. When Steam doesn't answer at all, farming keeps idling and checks again later, as cards keep dropping while Steam's pages are down. A run only stops when Steam says the sign-in has ended, three checks in a row, and then it says to sign in again.
+- **Steam's "An error was encountered" page no longer counts as "no drops left".** That page comes with an OK status and no drop count. It used to mark the game as done, with a card counted that never dropped. Now only a page that says how many drops are left counts, and anything else is checked again. The badge pages are read the same way, so a broken page can no longer end a run at once with "Finished — 0 cards" or leave games out.
+- **"Finished" names any game that couldn't be farmed**, and the list shows those games as "Couldn't farm", with the reason.
+- After a game fails to start, the next one starts straight away instead of 30 seconds later.
+
+**Connections and startup**
+
+- **A direct connection can't hang on "Connecting…" any more.** Finding Steam's servers, connecting and signing in now get 30 seconds; one that hangs counts as failed and is tried again like any other. Password sign-ins get the same limit for reaching Steam.
+- **Steam's list of servers is kept** for an hour, and on disk between starts, so reconnecting is quicker and still works while Steam's directory is down.
+- **Each account starts on its own at launch.** One that isn't ready, such as a slow connection or a Steam client signed in to another account, no longer holds up auto-idle or card farming for the others. An account the Steam client isn't signed in to stops being waited for after 30 seconds, where it held everything up for five minutes.
+- **Web sessions refresh one account at a time each**, so a slow refresh for one account doesn't hold up farming or the market for the others.
+- **Auto-idle starts without waiting for the games list.** The names follow once the list is in.
+- **Page loads try again when a connection can't be opened or drops on the way**, after 3 and then 8 seconds, and a connection that can't be opened gives up after 10 seconds instead of 30.
+- The look for updates at startup runs while accounts connect and wait for Steam, and isn't repeated eight seconds later.
+
+**Achievements**
+
+- **Closing the window to the tray closes an open achievement list.** An open list keeps its game running in Steam, so with the window in the tray you showed as in-game, with playtime counting, and automatic updates waited for the list to close. The list opens again when the window comes back.
+- **A game's achievements open sooner:** the game starts in Steam while its global unlock rates download, instead of one after the other, and the rates are kept for an hour.
+
+**Also**
+
+- Automatic updates wait while a sign-in is under way (a QR code on screen, or a Steam Guard code being typed).
+- The settings file is written to disk in full before it replaces the old one, and the copy before is kept as `config.json.bak`. If `config.json` is ever empty or missing, for instance after a power cut during a save, IdleKit uses that copy instead of starting with no accounts.
+- Pictures are read from disk away from the window's own thread, so a big library scrolls smoothly on a slow disk.
+- The market saves what it looks up once per run instead of after every item, and doesn't wait after the last item.
+
 ## 1.5
 
 - **Updates install by themselves.** When a newer version is found and nothing is running, IdleKit installs it and restarts, without asking. “Nothing running” means no idling, no card farming, no unlocking, no market work and no open achievement list. While something is running it waits, checks once a minute, and the bar offers “Install and restart now”. There is a switch for it under Settings → Updates; it is on.

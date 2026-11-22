@@ -14,7 +14,7 @@ use crate::steam::community::{self, WebSession};
 use crate::steam::local::LocalSteam;
 use crate::steam::market::{self, InvItem, Listing, PriceInfo, SellOutcome};
 use crate::steam::pictures;
-use crate::steam::{schema, webapi};
+use crate::steam::schema;
 use crate::updates::{self, UpdateState};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -286,7 +286,7 @@ pub async fn auth_start_credentials(
     let a = app.inner().clone();
     a.auth
         .clone()
-        .start_credentials(id.clone(), username.trim().to_string(), password, on_signed_in(a.clone(), mode));
+        .start_credentials(a.cm.clone(), id.clone(), username.trim().to_string(), password, on_signed_in(a.clone(), mode));
     Ok(id)
 }
 
@@ -639,23 +639,22 @@ pub struct AchView {
     pub warning: Option<String>,
 }
 
-async fn close_ach(app: &App, appid: u32) {
-    app.ach_open.lock().unwrap().remove(&appid);
-    if !app.idler.anyone_idling(appid) {
-        app.helpers.stop(appid).await;
-    }
-}
-
 #[tauri::command]
 pub async fn ach_open(app: State<'_, App>, steam_id: String, appid: u32) -> CmdResult<AchView> {
     app.require_local_client(&steam_id).map_err(anyhow_err)?;
     app.ach_open.lock().unwrap().insert(appid);
     let result = async {
-        let helper = app.helpers.ensure(appid).await?;
-        let data = helper.request("achievements", Value::Null, Duration::from_secs(40)).await?;
+        // Two slow parts at the same time: the game starting in Steam, and its
+        // unlock rates coming from the web.
+        let from_steam = async {
+            let helper = app.helpers.ensure(appid).await?;
+            let data = helper.request("achievements", Value::Null, Duration::from_secs(40)).await?;
+            anyhow::Ok((helper, data))
+        };
+        let (from_steam, percents) = tokio::join!(from_steam, app.achievement_percents(appid));
+        let (helper, data) = from_steam?;
         let lang = app.settings().language;
         let schema = app.steam_path().ok().and_then(|p| schema::load(&p, appid, &lang).ok());
-        let percents = webapi::global_achievement_percentages(&app.http, appid).await.unwrap_or_default();
         let by_name: HashMap<String, &schema::SchemaAchievement> = schema
             .as_ref()
             .map(|s| s.achievements.iter().map(|a| (a.api_name.clone(), a)).collect())
@@ -728,14 +727,14 @@ pub async fn ach_open(app: State<'_, App>, steam_id: String, appid: u32) -> CmdR
     }
     .await;
     if result.is_err() {
-        close_ach(&app, appid).await;
+        app.close_achievements(appid).await;
     }
     result.map_err(anyhow_err)
 }
 
 #[tauri::command]
 pub async fn ach_close(app: State<'_, App>, appid: u32) -> CmdResult<()> {
-    close_ach(&app, appid).await;
+    app.close_achievements(appid).await;
     Ok(())
 }
 
@@ -949,20 +948,21 @@ pub async fn market_prices(app: State<'_, App>, steam_id: String, hash_names: Ve
     let currency = wallet.currency;
     let total = hash_names.len();
     let mut out = Vec::new();
+    // Order-book ids looked up in this run: saved together at the end, not
+    // with a write of the whole settings file for each one.
+    let mut found: HashMap<String, u64> = HashMap::new();
     for (i, hash) in hash_names.into_iter().enumerate() {
         if app.market_cancel.load(Ordering::SeqCst) {
             break;
         }
         progress("prices", i, total, format!("Pricing {hash}"));
-        let cached = app.with_config(|c| c.item_name_ids.get(&hash).copied());
+        let cached = found.get(&hash).copied().or_else(|| app.with_config(|c| c.item_name_ids.get(&hash).copied()));
         let nameid = match cached {
             Some(id) => Ok(id),
             None => {
                 let r = market::item_name_id(&ws, &hash).await;
                 if let Ok(id) = r {
-                    app.update_config(|c| {
-                        c.item_name_ids.insert(hash.clone(), id);
-                    });
+                    found.insert(hash.clone(), id);
                 }
                 tokio::time::sleep(Duration::from_millis(s.delay_ms)).await;
                 r
@@ -991,7 +991,13 @@ pub async fn market_prices(app: State<'_, App>, steam_id: String, hash_names: Ve
             Err(e) => logbus::warn("market", format!("{hash}: {e:#}")),
         }
         out.push(info);
-        tokio::time::sleep(Duration::from_millis(s.delay_ms)).await;
+        // The pause keeps Steam from rate-limiting; after the last item there is nothing to keep apart.
+        if i + 1 < total {
+            tokio::time::sleep(Duration::from_millis(s.delay_ms)).await;
+        }
+    }
+    if !found.is_empty() {
+        app.update_config(|c| c.item_name_ids.extend(found));
     }
     progress("prices", total, total, "Done");
     Ok(PriceReport { currency, wallet, items: out })
@@ -1042,7 +1048,9 @@ pub async fn market_sell(app: State<'_, App>, steam_id: String, items: Vec<SellR
             }
             out.push(r);
             done += 1;
-            tokio::time::sleep(Duration::from_millis(delay)).await;
+            if done < total {
+                tokio::time::sleep(Duration::from_millis(delay)).await;
+            }
         }
     }
     progress("sell", total, total, "Done");
@@ -1081,7 +1089,9 @@ pub async fn market_remove(app: State<'_, App>, steam_id: String, listing_ids: V
             Ok(()) => removed += 1,
             Err(e) => logbus::warn("market", format!("{e:#}")),
         }
-        tokio::time::sleep(Duration::from_millis(delay)).await;
+        if i + 1 < total {
+            tokio::time::sleep(Duration::from_millis(delay)).await;
+        }
     }
     progress("remove", total, total, "Done");
     Ok(removed)

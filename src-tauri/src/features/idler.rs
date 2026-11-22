@@ -143,6 +143,28 @@ impl Idler {
         }
     }
 
+    /// Gives idling games the names known now. Games started before the games
+    /// list was known go by their numbers until then.
+    pub fn rename(&self, steam_id: &str, name_of: impl Fn(u32) -> String) {
+        // Names are looked up with the idler's lock let go: the lookup takes locks of its own.
+        let names: Vec<(u32, String)> = self.appids(steam_id).into_iter().map(|appid| (appid, name_of(appid))).collect();
+        let changed = {
+            let mut all = self.accounts.lock().unwrap();
+            let Some(map) = all.get_mut(steam_id) else { return };
+            let mut changed = false;
+            for (appid, name) in names {
+                if let Some(e) = map.get_mut(&appid).filter(|e| e.name != name) {
+                    e.name = name;
+                    changed = true;
+                }
+            }
+            changed
+        };
+        if changed {
+            self.emit(steam_id);
+        }
+    }
+
     /// Take back games that were just registered but never started.
     fn forget(&self, steam_id: &str, appids: &[u32]) {
         if let Some(map) = self.accounts.lock().unwrap().get_mut(steam_id) {

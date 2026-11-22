@@ -16,7 +16,8 @@ const STATUS: Record<FarmGame["status"], { label: string; tone: Tone }> = {
   queued: { label: "Waiting", tone: "neutral" },
   done: { label: "All cards received", tone: "ok" },
   skipped: { label: "Skipped", tone: "neutral" },
-  error: { label: "Couldn't start", tone: "bad" },
+  // Given up on for the run: it never started, or its card page kept failing. The note says which.
+  error: { label: "Couldn't farm", tone: "bad" },
 };
 
 export function FarmingPage() {

@@ -17,6 +17,29 @@ use tauri::{AppHandle, Manager};
 /// How long auto-idle and farm-on-launch wait for Steam before giving up.
 const STARTUP_WAIT: Duration = Duration::from_secs(5 * 60);
 const STARTUP_POLL: Duration = Duration::from_secs(5);
+/// How long the Steam client may stay signed in to a different account
+/// before the wait for this one stops: long enough for Steam to finish
+/// switching to the account it signs in to at start.
+const OTHER_ACCOUNT_GRACE: Duration = Duration::from_secs(30);
+
+/// What a look at the Steam client on this PC says about one local account.
+#[derive(Debug, PartialEq)]
+enum LocalLook {
+    Ready,
+    /// Not running yet, or not signed in yet.
+    NotYet,
+    /// Running and signed in, to a different account.
+    OtherAccount,
+}
+
+fn local_look(running: bool, active: Option<&str>, steam_id: &str) -> LocalLook {
+    match active {
+        _ if !running => LocalLook::NotYet,
+        Some(id) if id == steam_id => LocalLook::Ready,
+        Some(_) => LocalLook::OtherAccount,
+        None => LocalLook::NotYet,
+    }
+}
 
 /// The account can idle right now: its Steam client is running and signed in
 /// to it, or its direct connection is online.
@@ -55,13 +78,48 @@ async fn wait_until_usable(app: &App, account: &Account, wait: Duration, poll: D
     }
     logbus::info("app", format!("{}: waiting for {waiting_for}", logbus::label(&account.steam_id)));
     let deadline = Instant::now() + wait;
+    // Since when the Steam client has been signed in to someone else.
+    let mut other_since: Option<Instant> = None;
     while Instant::now() < deadline {
         tokio::time::sleep(poll).await;
         if can_idle(app, account) {
             return true;
         }
+        if account.mode != "direct" {
+            let ls = app.local_steam();
+            if local_look(ls.running, ls.active_steam_id.as_deref(), &account.steam_id) == LocalLook::OtherAccount {
+                let since = *other_since.get_or_insert_with(Instant::now);
+                if since.elapsed() >= OTHER_ACCOUNT_GRACE {
+                    logbus::info(
+                        "app",
+                        format!(
+                            "{}: the Steam client is signed in to a different account, so this one isn't waited for any longer",
+                            logbus::label(&account.steam_id)
+                        ),
+                    );
+                    return false;
+                }
+            } else {
+                other_since = None;
+            }
+        }
     }
     false
+}
+
+/// Starts an account's auto-idle list under the names known right now (from
+/// the games list kept on disk), so idling never waits on the network. When
+/// there was no list on disk yet, it is loaded afterwards and the names follow.
+async fn start_auto_idle(app: &App, account: &Account) {
+    let steam_id = &account.steam_id;
+    let listed = app.cached_games(steam_id).is_some();
+    let games = account.auto_idle.iter().map(|id| (*id, app.game_name(steam_id, *id))).collect();
+    if let Err(e) = app.idler.start(app, steam_id, games, "auto", None).await {
+        logbus::warn("idle", format!("Auto-idle for {} failed: {e:#}", logbus::label(steam_id)));
+    }
+    if !listed && app.load_games(steam_id, false).await.is_ok() {
+        app.idler.rename(steam_id, |appid| app.game_name(steam_id, appid));
+    }
 }
 
 /// Work done once at launch: reconnect direct accounts, auto-idle, auto-farm,
@@ -70,14 +128,21 @@ async fn startup(app: App, handle: AppHandle) {
     let cfg = app.config();
     let s = cfg.settings.clone();
     logbus::info("app", format!("IdleKit {} started", updates::shown(env!("CARGO_PKG_VERSION"))));
-    // With "install updates by itself" on: before anything is started, so a
-    // newer version is installed while nothing is running yet. Comes back
-    // unless it installed one.
-    updates::update_before_starting(&app, &handle).await;
-    // On its own, so waiting for Steam below doesn't hold it up. It looks a
-    // few seconds from now and then every half hour for as long as IdleKit
-    // runs, whenever "look for updates" is on.
-    tokio::spawn(updates::keep_looking(app.clone(), handle.clone()));
+    // With "install updates by itself" on, the first look for a newer version
+    // runs while the accounts below wait for Steam, and nothing is started
+    // before it is over: a newer version is still installed while nothing
+    // runs, without the wait adding to the time it takes Steam to come up.
+    // Then it keeps looking every half hour for as long as IdleKit runs,
+    // whenever "look for updates" is on.
+    let (looked, look_over) = tokio::sync::watch::channel(false);
+    {
+        let (app, handle) = (app.clone(), handle.clone());
+        tokio::spawn(async move {
+            let answered = updates::update_before_starting(&app, &handle).await;
+            let _ = looked.send(true);
+            updates::keep_looking(app, handle, answered).await;
+        });
+    }
     if !app.helpers.helper_path().exists() {
         logbus::warn(
             "app",
@@ -99,36 +164,39 @@ async fn startup(app: App, handle: AppHandle) {
             app.fetch_profile(&steam_id).await;
         });
     }
-    if s.connect_direct_on_launch {
-        for a in cfg.accounts.iter().filter(|a| a.mode == "direct") {
-            if secrets::get(&secrets::refresh_token_key(&a.steam_id)).is_none() {
-                continue;
-            }
-            if let Err(e) = app.cm.connect(&a.steam_id).await {
-                logbus::warn("direct", format!("{}: {e:#}", logbus::label(&a.steam_id)));
-            }
+    // Each account on its own: one that isn't ready (a slow connection, a
+    // Steam client signed in to someone else) holds up no other.
+    for a in cfg.accounts.iter() {
+        let connect = s.connect_direct_on_launch
+            && a.mode == "direct"
+            && secrets::get(&secrets::refresh_token_key(&a.steam_id)).is_some();
+        let auto_idle = s.auto_idle_on_launch && !a.auto_idle.is_empty();
+        let farm = s.farm_on_launch && cfg.active_account.as_deref() == Some(a.steam_id.as_str());
+        if !(connect || auto_idle || farm) {
+            continue;
         }
-    }
-    if s.auto_idle_on_launch {
-        for a in cfg.accounts.iter().filter(|a| !a.auto_idle.is_empty()) {
+        let (app, account, mut look_over) = (app.clone(), a.clone(), look_over.clone());
+        tokio::spawn(async move {
+            if connect {
+                if let Err(e) = app.cm.connect(&account.steam_id).await {
+                    logbus::warn("direct", format!("{}: {e:#}", logbus::label(&account.steam_id)));
+                }
+            }
+            if !(auto_idle || farm) {
+                return;
+            }
             // Whether or not Steam turned up: starting says what is wrong if it didn't.
-            wait_until_usable(&app, a, STARTUP_WAIT, STARTUP_POLL).await;
-            let _ = app.load_games(&a.steam_id, false).await;
-            let games = a.auto_idle.iter().map(|id| (*id, app.game_name(&a.steam_id, *id))).collect();
-            if let Err(e) = app.idler.start(&app, &a.steam_id, games, "auto", None).await {
-                logbus::warn("idle", format!("Auto-idle for {} failed: {e:#}", logbus::label(&a.steam_id)));
+            wait_until_usable(&app, &account, STARTUP_WAIT, STARTUP_POLL).await;
+            let _ = look_over.wait_for(|over| *over).await;
+            if auto_idle {
+                start_auto_idle(&app, &account).await;
             }
-        }
-    }
-    if s.farm_on_launch {
-        if let Some(active) = cfg.active_account.clone() {
-            if let Some(account) = cfg.account(&active) {
-                wait_until_usable(&app, account, STARTUP_WAIT, STARTUP_POLL).await;
+            if farm {
+                if let Err(e) = app.farming.start(app.clone(), account.steam_id.clone()) {
+                    logbus::warn("farming", format!("{e:#}"));
+                }
             }
-            if let Err(e) = app.farming.start(app.clone(), active) {
-                logbus::warn("farming", format!("{e:#}"));
-            }
-        }
+        });
     }
 }
 
@@ -181,7 +249,13 @@ pub fn run() {
         .on_window_event(desktop::on_window_event)
         // Pictures kept on disk reach the window through this address:
         // pic://localhost/<file> (http://pic.localhost/<file> on Windows).
-        .register_uri_scheme_protocol("pic", |ctx, request| serve_picture(ctx.app_handle(), request.uri().path()))
+        .register_asynchronous_uri_scheme_protocol("pic", |ctx, request, responder| {
+            // Read on a worker thread: a big library asks for a couple of hundred
+            // pictures at once, and none of them should wait on the window's thread.
+            let handle = ctx.app_handle().clone();
+            let path = request.uri().path().to_string();
+            tauri::async_runtime::spawn_blocking(move || responder.respond(serve_picture(&handle, &path)));
+        })
         .setup(|app| {
             logbus::init(app.handle().clone());
             let data_dir = app.path().app_data_dir()?;
@@ -308,4 +382,19 @@ pub fn run() {
                 });
             }
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_steam_client_signed_in_to_someone_else_is_told_apart() {
+        let me = "76561197960265733";
+        assert_eq!(local_look(false, None, me), LocalLook::NotYet);
+        assert_eq!(local_look(false, Some(me), me), LocalLook::NotYet, "a pid left from a crash");
+        assert_eq!(local_look(true, None, me), LocalLook::NotYet, "running, not signed in yet");
+        assert_eq!(local_look(true, Some(me), me), LocalLook::Ready);
+        assert_eq!(local_look(true, Some("76561197960265999"), me), LocalLook::OtherAccount);
+    }
 }

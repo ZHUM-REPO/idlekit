@@ -48,6 +48,56 @@ fn random_session_id() -> String {
     (0..12).map(|_| format!("{:02x}", rng.gen::<u8>())).collect()
 }
 
+/// A page read that never got its answer (timed out, connection reset or
+/// dropped, as happens on Wi-Fi) is tried again after these pauses, in seconds.
+const NETWORK_RETRIES: [u64; 2] = [3, 8];
+
+/// Steam answered, but not to this account: the page was shown to a visitor
+/// who isn't signed in, or to someone else. The web session has ended.
+#[derive(Debug)]
+pub struct SessionEnded;
+
+impl std::fmt::Display for SessionEnded {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Steam web session expired — reconnect this account's web session")
+    }
+}
+
+impl std::error::Error for SessionEnded {}
+
+/// Whether an error says the web session has ended, rather than that Steam or
+/// the connection had trouble.
+pub fn session_ended(e: &anyhow::Error) -> bool {
+    e.chain().any(|c| c.is::<SessionEnded>())
+}
+
+/// Who a community page was shown to, from the `g_steamID` every page sets.
+#[derive(Debug, PartialEq)]
+pub enum ShownTo {
+    Account(String),
+    /// `g_steamID = false`: a visitor who isn't signed in.
+    NobodySignedIn,
+    /// No `g_steamID` at all: not one of Steam's normal pages (an outage or
+    /// maintenance notice, or something in between).
+    Unknown,
+}
+
+pub fn shown_to(html: &str) -> ShownTo {
+    if let Some(id) = logged_in_as(html) {
+        ShownTo::Account(id)
+    } else if re!(r"g_steamID\s*=\s*false").is_match(html) {
+        ShownTo::NobodySignedIn
+    } else {
+        ShownTo::Unknown
+    }
+}
+
+/// Steam's "Sorry! An error was encountered while processing your request"
+/// page. It comes with an "OK" status, so only its text gives it away.
+pub fn is_error_page(html: &str) -> bool {
+    html.to_ascii_lowercase().contains("error was encountered while processing your request")
+}
+
 impl WebSession {
     pub fn from_access_token(steam_id: &str, access_token: &str) -> Result<Self> {
         let value = urlencoding::encode(&format!("{steam_id}||{access_token}")).into_owned();
@@ -74,6 +124,8 @@ impl WebSession {
         let client = reqwest::Client::builder()
             .cookie_provider(jar)
             .user_agent(UA_BROWSER)
+            // A connection that can't be opened fails in seconds, not at the end of the 30.
+            .connect_timeout(Duration::from_secs(10))
             .timeout(Duration::from_secs(30))
             .build()?;
         Ok(Self {
@@ -88,41 +140,83 @@ impl WebSession {
         format!("https://steamcommunity.com/profiles/{}", self.steam_id)
     }
 
-    /// GET with retry on Steam's 429/5xx responses.
+    /// GET a page as text. Tries again when the connection fails on the way
+    /// (timed out, reset), and with growing pauses when Steam answers 429 or
+    /// a 5xx.
     pub async fn get_text(&self, url: &str) -> Result<String> {
         let mut delay = 4u64;
-        for attempt in 0..4 {
-            let resp = self.client.get(url).send().await.with_context(|| format!("GET {url}"))?;
+        let mut busy = 0;
+        let mut dropped = 0;
+        loop {
+            let resp = match self.client.get(url).send().await {
+                Ok(resp) => resp,
+                Err(e) if dropped < NETWORK_RETRIES.len() && worth_another_try(&e) => {
+                    tokio::time::sleep(Duration::from_secs(NETWORK_RETRIES[dropped])).await;
+                    dropped += 1;
+                    continue;
+                }
+                Err(e) => return Err(anyhow::Error::new(e.without_url())).with_context(|| format!("GET {url}")),
+            };
             let status = resp.status();
             if status.as_u16() == 429 || status.is_server_error() {
-                if attempt == 3 {
+                if busy == 3 {
                     bail!("Steam is rate-limiting requests (HTTP {status}); try again later");
                 }
+                busy += 1;
                 tokio::time::sleep(Duration::from_secs(delay)).await;
                 delay *= 3;
                 continue;
             }
             if !status.is_success() {
-                bail!("HTTP {status} from {url}");
+                return Err(anyhow!("HTTP {status}")).with_context(|| format!("GET {url}"));
             }
-            return Ok(resp.text().await?);
+            match resp.text().await {
+                Ok(text) => return Ok(text),
+                // Cut off half way through: the same as never answered.
+                Err(e) if dropped < NETWORK_RETRIES.len() && worth_another_try(&e) => {
+                    tokio::time::sleep(Duration::from_secs(NETWORK_RETRIES[dropped])).await;
+                    dropped += 1;
+                }
+                Err(e) => return Err(anyhow::Error::new(e.without_url())).with_context(|| format!("GET {url}")),
+            }
         }
-        unreachable!()
     }
 
+    /// Checks a page was shown to this account, signed in. Shown to nobody or
+    /// to someone else, the session has ended ([`SessionEnded`]); Steam's
+    /// error page or a page that isn't one of Steam's normal ones is trouble
+    /// on Steam's side, and an error of its own.
+    fn shown_to_me(&self, html: &str, what: &str) -> Result<()> {
+        match shown_to(html) {
+            ShownTo::Account(id) if id == self.steam_id => {}
+            ShownTo::Account(_) | ShownTo::NobodySignedIn => return Err(SessionEnded.into()),
+            ShownTo::Unknown => bail!("Steam sent a page IdleKit doesn't recognize instead of {what} (it may be down for maintenance)"),
+        }
+        if is_error_page(html) {
+            bail!("Steam sent its \"An error was encountered\" page instead of {what}");
+        }
+        Ok(())
+    }
+
+    /// Every game on the badge pages. Fails, rather than leave games out,
+    /// when a page that should list some comes back without them.
     pub async fn badges(&self) -> Result<Vec<BadgeGame>> {
         let mut all = Vec::new();
         let mut page = 1u32;
+        // The highest page number seen so far: the last page doesn't link to itself.
+        let mut last = 1u32;
         loop {
             let html = self
                 .get_text(&format!("{}/badges/?l=english&p={page}", self.profile_url()))
                 .await?;
+            self.shown_to_me(&html, &format!("badge page {page}"))?;
             let parsed = parse_badges_page(&html);
-            if parsed.logged_in_as.as_deref() != Some(self.steam_id.as_str()) {
-                bail!("Steam web session expired — reconnect this account's web session");
+            if page > 1 && parsed.rows == 0 {
+                bail!("Steam's badge page {page} came back empty");
             }
             all.extend(parsed.games);
-            if page >= parsed.max_page || page >= 50 {
+            last = last.max(parsed.max_page);
+            if page >= last || page >= 50 {
                 break;
             }
             page += 1;
@@ -131,17 +225,24 @@ impl WebSession {
         Ok(all)
     }
 
+    /// One game's card drops. Only a page that says how many drops are left
+    /// counts: anything else is an error, never "none left".
     pub async fn gamecard(&self, appid: u32) -> Result<BadgeGame> {
         let html = self
             .get_text(&format!("{}/gamecards/{appid}/?l=english", self.profile_url()))
             .await?;
-        let parsed = parse_badges_page(&html);
-        if parsed.logged_in_as.as_deref() != Some(self.steam_id.as_str()) {
-            bail!("Steam web session expired — reconnect this account's web session");
-        }
-        let mut g = parse_gamecard_page(&html);
+        self.shown_to_me(&html, "the game's card page")?;
+        let mut g = parse_gamecard_page(&html).ok_or_else(|| anyhow!("Steam's card page for the game didn't say how many drops are left"))?;
         g.appid = appid;
         Ok(g)
+    }
+
+    /// Whether Steam answers this session normally, from the first badge
+    /// page: tells a page of one game that keeps failing from Steam (or the
+    /// connection) having trouble.
+    pub async fn answers(&self) -> Result<()> {
+        let html = self.get_text(&format!("{}/badges/?l=english", self.profile_url())).await?;
+        self.shown_to_me(&html, "the badge page")
     }
 
     pub async fn licenses(&self) -> Result<Vec<License>> {
@@ -163,12 +264,24 @@ impl WebSession {
         let html = self
             .get_text(&format!("{}/badges/?l=english", self.profile_url()))
             .await?;
-        match parse_badges_page(&html).logged_in_as {
-            Some(id) if id == self.steam_id => Ok(()),
-            Some(other) => bail!("This cookie belongs to a different account ({other})"),
-            None => bail!("Steam did not accept this session"),
+        match shown_to(&html) {
+            ShownTo::Account(id) if id == self.steam_id => Ok(()),
+            ShownTo::Account(other) => bail!("This cookie belongs to a different account ({other})"),
+            ShownTo::NobodySignedIn => bail!("Steam did not accept this session"),
+            ShownTo::Unknown => bail!("Steam sent a page IdleKit doesn't recognize (it may be down for maintenance); try again in a while"),
         }
     }
+}
+
+/// Whether a request that failed on the way is worth sending again: a
+/// connection that couldn't be opened or that dropped. Not a request that
+/// could never work (a bad address, a redirect loop), and not one a server
+/// took the whole 30 seconds over: that would only be waited on again.
+fn worth_another_try(e: &reqwest::Error) -> bool {
+    if e.is_builder() || e.is_redirect() {
+        return false;
+    }
+    e.is_connect() || !e.is_timeout()
 }
 
 /// Another player's unlock order/timing for a game, from their public profile.
@@ -227,8 +340,10 @@ pub struct BadgeGame {
 
 pub struct BadgesPage {
     pub games: Vec<BadgeGame>,
+    /// Every badge row on the page, games' or not: a page with none at all
+    /// where some were expected came back broken.
+    pub rows: usize,
     pub max_page: u32,
-    pub logged_in_as: Option<String>,
 }
 
 fn logged_in_as(html: &str) -> Option<String> {
@@ -237,11 +352,17 @@ fn logged_in_as(html: &str) -> Option<String> {
         .map(|c| c[1].to_string())
 }
 
+/// The drops left, from "3 card drops remaining" or "No card drops
+/// remaining"; nothing when the text says neither.
+fn parse_drops(t: &str) -> Option<u32> {
+    if let Some(c) = re!(r"(\d+)\s+card drops?\s+remaining").captures(t) {
+        return c[1].parse().ok();
+    }
+    re!(r"(?i)\bno\s+card\s+drops?\s+remaining").is_match(t).then_some(0)
+}
+
 fn drops_from_text(t: &str) -> u32 {
-    re!(r"(\d+)\s+card drops?\s+remaining")
-        .captures(t)
-        .and_then(|c| c[1].parse().ok())
-        .unwrap_or(0)
+    parse_drops(t).unwrap_or(0)
 }
 
 fn hours_from_text(t: &str) -> f64 {
@@ -255,7 +376,9 @@ pub fn parse_badges_page(html: &str) -> BadgesPage {
     let doc = Html::parse_document(html);
     let appid_re = re!(r"/gamecards/(\d+)");
     let mut games = Vec::new();
+    let mut rows = 0;
     for row in doc.select(sel!("div.badge_row")) {
+        rows += 1;
         let Some(href) = row
             .select(sel!("a.badge_row_overlay"))
             .next()
@@ -298,16 +421,18 @@ pub fn parse_badges_page(html: &str) -> BadgesPage {
         .max()
         .unwrap_or(1)
         .max(1);
-    BadgesPage { games, max_page, logged_in_as: logged_in_as(html) }
+    BadgesPage { games, rows, max_page }
 }
 
-pub fn parse_gamecard_page(html: &str) -> BadgeGame {
+/// A game's card page. Nothing when the page doesn't say how many drops are
+/// left: Steam's error page, or a page cut short, must never read as "none
+/// left".
+pub fn parse_gamecard_page(html: &str) -> Option<BadgeGame> {
     let doc = Html::parse_document(html);
     let drops = doc
         .select(sel!(".progress_info_bold"))
         .next()
-        .map(|e| drops_from_text(&text_of(e)))
-        .unwrap_or(0);
+        .and_then(|e| parse_drops(&text_of(e)))?;
     let hours = doc
         .select(sel!(".badge_title_stats_playtime"))
         .next()
@@ -318,7 +443,7 @@ pub fn parse_gamecard_page(html: &str) -> BadgeGame {
         .next()
         .map(|e| squash(&text_of(e).replace("View details", "")))
         .unwrap_or_default();
-    BadgeGame { appid: 0, name, drops_remaining: drops, playtime_hours: hours }
+    Some(BadgeGame { appid: 0, name, drops_remaining: drops, playtime_hours: hours })
 }
 
 #[derive(Serialize, Clone, Debug, PartialEq)]
@@ -556,7 +681,7 @@ mod tests {
     #[test]
     fn badges_page() {
         let p = parse_badges_page(BADGES);
-        assert_eq!(p.logged_in_as.as_deref(), Some("76561197960265729"));
+        assert_eq!(shown_to(BADGES), ShownTo::Account("76561197960265729".into()));
         assert_eq!(p.max_page, 3);
         assert_eq!(p.games.len(), 3);
         assert_eq!(
@@ -570,9 +695,74 @@ mod tests {
 
     #[test]
     fn logged_out_page() {
-        let p = parse_badges_page(r#"<script>g_steamID = false;</script>"#);
-        assert!(p.logged_in_as.is_none());
-        assert_eq!(p.max_page, 1);
+        let html = r#"<script>g_steamID = false;</script>"#;
+        assert_eq!(shown_to(html), ShownTo::NobodySignedIn);
+        assert_eq!(parse_badges_page(html).max_page, 1);
+    }
+
+    #[tokio::test]
+    async fn a_page_cut_off_on_the_way_is_asked_for_again() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            // The first time, hang up without an answer, as a dropped Wi-Fi connection does.
+            let (first, _) = listener.accept().await.unwrap();
+            drop(first);
+            while let Ok((mut socket, _)) = listener.accept().await {
+                let mut request = [0u8; 2048];
+                let _ = socket.read(&mut request).await;
+                let _ = socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\nConnection: close\r\n\r\npage").await;
+            }
+        });
+        let ws = WebSession::from_access_token("76561197960265729", "x.y.z").unwrap();
+        let started = std::time::Instant::now();
+        assert_eq!(ws.get_text(&format!("http://{addr}/badges/")).await.unwrap(), "page");
+        assert!(started.elapsed() >= Duration::from_secs(NETWORK_RETRIES[0]), "asked again after a pause");
+    }
+
+    #[test]
+    fn who_a_page_was_shown_to() {
+        assert_eq!(shown_to(BADGES), ShownTo::Account("76561197960265729".into()));
+        assert_eq!(shown_to(r#"<script> g_sessionID = "abc"; g_steamID = false; </script>"#), ShownTo::NobodySignedIn);
+        // Akamai's or a maintenance page: not one of Steam's community pages at all.
+        assert_eq!(shown_to("<html>An error occurred while processing your request. Reference #97</html>"), ShownTo::Unknown);
+        assert!(session_ended(&anyhow::Error::new(SessionEnded).context("GET badges")));
+        assert!(!session_ended(&anyhow!("HTTP 404 Not Found")));
+    }
+
+    /// Steam's own error page, signed in, with an "OK" status.
+    const ERROR_PAGE: &str = r#"<html><script>g_steamID = "76561197960265729";</script>
+<div class="error_ctn"><div id="message"><h2>Sorry!</h2>
+<h3>An error was encountered while processing your request:</h3><br><br>
+<h3>There was a problem accessing the item. Please try again.</h3></div></div></html>"#;
+
+    #[test]
+    fn steams_error_page_is_never_read_as_no_drops_left() {
+        assert!(is_error_page(ERROR_PAGE));
+        assert!(!is_error_page(BADGES));
+        assert_eq!(parse_gamecard_page(ERROR_PAGE), None);
+        // A page cut short, before the drop count.
+        assert_eq!(parse_gamecard_page(r#"<div class="badge_title">Game B</div>"#), None);
+        let page = |drops: &str| {
+            format!(r#"<div class="badge_title">Game B</div><div class="badge_title_stats_playtime">5.0 hrs on record</div><span class="progress_info_bold">{drops}</span>"#)
+        };
+        let left = |drops: &str| parse_gamecard_page(&page(drops)).map(|g| g.drops_remaining);
+        assert_eq!(left("2 card drops remaining"), Some(2));
+        assert_eq!(left("1 card drop remaining"), Some(1));
+        assert_eq!(left("No card drops remaining"), Some(0));
+        assert_eq!(left("Loading…"), None);
+        let g = parse_gamecard_page(&page("1 card drop remaining")).unwrap();
+        assert_eq!((g.name.as_str(), g.playtime_hours), ("Game B", 5.0));
+    }
+
+    #[test]
+    fn badge_rows_are_counted_games_or_not() {
+        let p = parse_badges_page(BADGES);
+        assert_eq!((p.rows, p.games.len()), (4, 3));
+        let error = parse_badges_page(ERROR_PAGE);
+        assert_eq!((error.rows, error.games.len(), error.max_page), (0, 0, 1));
     }
 
     #[test]

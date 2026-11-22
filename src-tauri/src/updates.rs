@@ -101,6 +101,8 @@ pub struct Activity {
     pub unlocking: bool,
     pub market: bool,
     pub achievements: bool,
+    /// A sign-in (QR code or password) is waiting on the user.
+    pub signing_in: bool,
 }
 
 /// The first thing that stands in the way of installing right now, if any.
@@ -115,6 +117,8 @@ fn holds_up(a: &Activity) -> Option<&'static str> {
         Some("market work is under way")
     } else if a.achievements {
         Some("a game's achievements are open")
+    } else if a.signing_in {
+        Some("a sign-in is under way")
     } else {
         None
     }
@@ -127,6 +131,7 @@ fn activity(app: &App) -> Activity {
         unlocking: app.unlocker.all().iter().any(|u| u.running),
         market: app.market_busy.load(std::sync::atomic::Ordering::SeqCst) > 0,
         achievements: !app.ach_open.lock().unwrap().is_empty(),
+        signing_in: app.auth.in_progress(),
     }
 }
 
@@ -278,13 +283,15 @@ async fn install_by_itself(app: &App, handle: &AppHandle, starting: bool) {
 /// look, and an install right away if there is a newer version. Nothing is
 /// running yet, so nothing is cut short, and what starts at launch starts in
 /// the new version.
-pub async fn update_before_starting(app: &App, handle: &AppHandle) {
+/// Whether the look got an answer (then the next one is only due in half an hour).
+pub async fn update_before_starting(app: &App, handle: &AppHandle) -> bool {
     let settings = app.settings();
     if endpoints(handle).is_empty() || !settings.check_updates || !settings.auto_install_updates {
-        return;
+        return false;
     }
-    look(app, handle, true, STARTUP_LOOK_TIMEOUT).await;
+    let failed = look(app, handle, true, STARTUP_LOOK_TIMEOUT).await.1;
     install_by_itself(app, handle, true).await;
+    !failed
 }
 
 /// Clears the note of an automatic install once IdleKit is at that version.
@@ -301,7 +308,10 @@ fn settle_last_attempt(app: &App, handle: &AppHandle) {
 /// IdleKit runs, while "look for updates" is on in Settings. One look at
 /// startup is not enough: a copy left running never learned of a release, and
 /// one failed look (a busy connection at startup) was never repeated.
-pub async fn keep_looking(app: App, handle: AppHandle) {
+///
+/// `answered_at_start`: the look made before anything was started got its
+/// answer, so the first one here waits the usual half hour.
+pub async fn keep_looking(app: App, handle: AppHandle, answered_at_start: bool) {
     if endpoints(&handle).is_empty() {
         return;
     }
@@ -314,11 +324,16 @@ pub async fn keep_looking(app: App, handle: AppHandle) {
         normal
     };
     settle_last_attempt(&app, &handle);
-    tokio::time::sleep(FIRST_LOOK).await;
+    if !answered_at_start {
+        tokio::time::sleep(FIRST_LOOK).await;
+    }
     let mut failures = 0u32;
-    let mut first = true;
+    let mut first = !answered_at_start;
+    let mut skip_look = answered_at_start;
     loop {
-        if app.settings().check_updates {
+        if skip_look {
+            skip_look = false;
+        } else if app.settings().check_updates {
             // The first look reports like one asked for by hand; the ones
             // after it stay out of the way unless they find something.
             let failed = look(&app, &handle, !first, CHECK_TIMEOUT).await.1;
@@ -574,6 +589,7 @@ mod tests {
         assert_eq!(holds_up(&Activity { unlocking: true, ..Default::default() }), Some("the achievement unlocker is running"));
         assert_eq!(holds_up(&Activity { market: true, ..Default::default() }), Some("market work is under way"));
         assert_eq!(holds_up(&Activity { achievements: true, ..Default::default() }), Some("a game's achievements are open"));
+        assert_eq!(holds_up(&Activity { signing_in: true, ..Default::default() }), Some("a sign-in is under way"));
         // several things at once: the first is named
         assert_eq!(holds_up(&Activity { idling: 3, farming: true, market: true, ..Default::default() }), Some("games are idling"));
     }

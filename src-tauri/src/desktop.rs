@@ -58,12 +58,20 @@ pub fn show_main(handle: &AppHandle) {
         let _ = window.unminimize();
         let _ = window.show();
         let _ = window.set_focus();
+        // What was closed while the window was away (achievement lists) opens again.
+        let _ = handle.emit("window://shown", ());
     }
 }
 
 fn hide_main(handle: &AppHandle) {
     if let Some(window) = handle.get_webview_window(MAIN_WINDOW) {
         let _ = window.hide();
+    }
+    // An open achievements list keeps its game running in Steam: not while
+    // the window is in the tray, where nobody sees it.
+    if let Some(app) = handle.try_state::<App>() {
+        let app = app.inner().clone();
+        tauri::async_runtime::spawn(async move { app.close_all_achievements().await });
     }
 }
 
