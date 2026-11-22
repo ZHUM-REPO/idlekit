@@ -31,6 +31,7 @@ Download the latest `IdleKit_…_x64-setup.exe` from the [releases page](https:/
 - **Updates itself** – new releases from this repository are offered inside the app. Each one is signed, and the app checks the signature against a key built into it before installing anything.
 - **Game art everywhere** – each game shows its Steam cover in the library (or the wide banner; choose in Settings) and its icon in every list. Art is looked up through Steam's public store API, which needs no key or sign-in. Pictures are fetched three at a time, the ones on screen first, and kept on disk (`%LOCALAPPDATA%\dev.idlekit.app\pictures`), so each is downloaded once and a large library doesn't take over a slow connection. Games without a cover fall back to their banner, then to a tile with the game's name, which is also what a tile shows while its picture is on the way.
 - **Multiple accounts**, three sign-in methods (this PC's Steam client, QR code with the Steam Mobile app, username/password with Steam Guard), online status per account (online/away/invisible/offline), and custom "now playing" text.
+- **One bar, not two** – the window has no separate Windows title bar. Minimize, maximize and close sit at the end of IdleKit's own top bar, which is also what the window is dragged by.
 - Graphite, Midnight and Daylight themes with five "running" colors. The interface is set in Inter, the same typeface Steam Game Idler uses by default, bundled with the app so it never loads from the network.
 
 ## How it talks to Steam
@@ -113,6 +114,7 @@ src/                     React UI (Vite, Tailwind 4, zustand)
   lib/art.ts             which image URLs to try for a game, and the batched art lookup
   lib/pictures.ts        pictures shown from disk; missing ones fetched a few at a time, on-screen first
   components/Desktop.tsx the "update available" bar and the keep-running-or-quit question
+  components/WindowBar.tsx the window's own title bar: drag area and the minimize, maximize and close buttons
   pages/                 Library, Idling, Card farming, Achievements, Market, Accounts, Settings, Logs
 src-tauri/src/
   commands.rs            all Tauri commands
@@ -145,12 +147,13 @@ What has been tested, and how:
 - **The app on Linux**, against a mock Steam install: adding a local account, loading its games, launching `steam-helper` for a game.
 - **Start on launch, on Linux** against a stand-in Steam client that only appears twelve seconds after IdleKit: auto-idle waits, then starts within seconds of Steam being there; with no Steam installed it says so at once.
 - **Tray and startup, on Linux:** the close question, hiding to the tray and coming back from a second launch, the tray menu (driven over D-Bus), the sign-in startup entry being written and removed, starting in the tray, and opening the window after an update.
+- **The window's own bar, on Linux:** dragging the bar moves the window by the distance dragged, and the close button goes through the same close question as before. Maximize and resizing by the edges need a window manager, which the test machine doesn't have.
 - **Updater, on Linux against a local update server:** finding a newer version at startup and from the tray menu, accepting a file signed with the release key, and refusing one that was altered after signing.
 - **The log, on Linux** with the window loaded against a stand-in Steam client, two runs in a row: `log.txt` gets a header per run, the wait for Steam, auto-idle starting, the first page coming up and the window's actions, and holds neither the sign-in name, the Steam ID, the profile name nor the user name from folder paths.
 - **Game art**, against `scripts/fake-steam.mjs`: the lookup, the disk cache, covers in hashed folders, and each fallback. With the real app run twice: 24 pictures fetched and kept the first time, none of them fetched again the second, and the account's avatar taken from Steam's own copy on the PC. In the preview with a 486-game library and slow answers: never more than three fetches at once, the tiles on screen always first, and nothing fetched twice.
 - **The Windows installer, on GitHub's Windows machine:** the app and the helper compile, and the installer is built and signed. Each setup file is checked before it is published: it installs without asking anything; puts the app, the helper and Steam's library in place; creates Start menu and desktop shortcuts; the installed app opens its window with WebView2 running; opening it a second time hands over to the copy already running; the first page comes up in the window; `log.txt` is written without the machine's user or computer name in it and reports no fault in the window or the app; and uninstalling removes all of it.
 
-What has not been tested: anything against live Steam servers or a running Steam client, and these Windows-only parts: Steam's registry keys, the Credential Manager, the tray icon and its menu, starting at sign-in, the check that Steam's process is still there, the market's fee numbers against a real wallet in another currency, where Steam keeps avatars on Windows (`config\avatarcache`), and an installed copy updating itself to a newer release. The first things to try on Windows, in this order:
+What has not been tested: anything against live Steam servers or a running Steam client, and these Windows-only parts: Steam's registry keys, the Credential Manager, the tray icon and its menu, starting at sign-in, the check that Steam's process is still there, the market's fee numbers against a real wallet in another currency, where Steam keeps avatars on Windows (`config\avatarcache`), the window's own bar (maximize and restore, resizing by the edges, snapping), and an installed copy updating itself to a newer release. The first things to try on Windows, in this order:
 
 1. **Local mode:** add your account from "This PC's Steam". The library should fill with covers within a second or two, and lists should show each game's icon; if they don't, look on the Logs page for a warning from `art`. Then idle a game and check Steam shows you in-game.
 2. **Achievements:** open a game in the Manager; the list should load in a few seconds.

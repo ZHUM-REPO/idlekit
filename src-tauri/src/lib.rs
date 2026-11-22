@@ -283,6 +283,7 @@ pub fn run() {
             commands::web_check,
             commands::set_autostart,
             commands::window_close_choice,
+            commands::window_control,
             commands::update_check,
             commands::update_install,
             commands::log_event,

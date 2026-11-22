@@ -2,6 +2,12 @@
 
 The section for the version being released becomes the text of its release page.
 
+## 0.7
+
+- **The window has its own title bar.** The separate Windows bar above the app is gone. Minimize, maximize and close now sit at the right end of IdleKit's top bar, and the window is moved by dragging any empty part of that bar or the logo beside it. A double click on the bar maximizes or restores the window.
+- Closing with the new button works as before: it asks, goes to the tray or quits, whichever is set in Settings.
+- The window is still resized by its edges, and Alt+F4 and the Windows key with the arrow keys work as they did. The layout menu that Windows 11 shows when the mouse rests on a maximize button does not appear on the app's own button; dragging the window to a screen edge still snaps it.
+
 ## 0.6
 
 - **Pictures no longer take over the connection.** Opening the Library used to start a download for every cover near the screen at once, dozens at a time, which could slow the whole network on a slow line. Now at most three pictures are fetched at a time: the tiles on screen first, then the ones just below, and nothing for tiles far away until you scroll near them.

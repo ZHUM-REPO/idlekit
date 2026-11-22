@@ -14,6 +14,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { inTauri } from "../lib/api";
 import { useNow } from "../lib/hooks";
 import { pictureBroken, usePicture } from "../lib/pictures";
+import { dragRegion, WindowControls } from "./WindowBar";
 import { until } from "../lib/format";
 import { useActiveAccount, useApp, type Page } from "../lib/store";
 import type { Account } from "../lib/types";
@@ -76,8 +77,9 @@ export function Sidebar() {
   );
 
   return (
-    <nav className="flex w-[212px] flex-none flex-col border-r border-line bg-panel px-3 pb-3 pt-4">
-      <div className="mb-5 flex items-center gap-2.5 px-1.5">
+    <nav className="flex w-[212px] flex-none flex-col border-r border-line bg-panel px-3 pb-3">
+      {/* The left end of the window's bar: the window can be moved by it. */}
+      <div {...dragRegion} className="-mx-3 mb-2 flex h-[58px] flex-none items-center gap-2.5 px-[18px]">
         <Logo />
         <span className="heading text-[18px] font-semibold">IdleKit</span>
       </div>
@@ -249,10 +251,12 @@ export function TopBar() {
     .sort((a, b) => a.nextAt - b.nextAt)[0];
 
   return (
-    <header className="flex h-[58px] flex-none items-center justify-between gap-4 border-b border-line bg-bg px-5">
+    // Also the window's title bar: its empty parts move the window, and the
+    // window's buttons sit at its right end.
+    <header {...dragRegion} className="flex h-[58px] flex-none items-center gap-4 border-b border-line bg-bg pl-5">
       <AccountSwitcher />
       {active && (
-        <div className="flex items-center gap-1">
+        <div className="ml-auto flex items-center gap-1">
           <Gauge
             on={idleN > 0}
             label="Idling"
@@ -281,6 +285,7 @@ export function TopBar() {
           />
         </div>
       )}
+      <WindowControls className={active ? undefined : "ml-auto"} />
     </header>
   );
 }

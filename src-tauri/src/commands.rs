@@ -1082,6 +1082,28 @@ pub async fn window_close_choice(handle: AppHandle, action: String) -> CmdResult
     Ok(())
 }
 
+/// The window has no title bar of Windows' own: the app draws the bar and its
+/// buttons, and they end up here. Gives back whether the window is maximized.
+#[tauri::command]
+pub async fn window_control(window: tauri::WebviewWindow, action: String) -> CmdResult<bool> {
+    match action.as_str() {
+        "minimize" => window.minimize(),
+        "maximize" => match window.is_maximized() {
+            Ok(true) => window.unmaximize(),
+            _ => window.maximize(),
+        },
+        // Goes through the same question as closing any other way (tray, quit or ask).
+        "close" => window.close(),
+        // Called while the mouse button is down on the bar: the system takes
+        // over and moves the window, snapping included.
+        "drag" => window.start_dragging(),
+        "state" => Ok(()),
+        other => return Err(format!("Unknown window action: {other}")),
+    }
+    .map_err(err)?;
+    Ok(window.is_maximized().unwrap_or(false))
+}
+
 #[tauri::command]
 pub async fn update_check(app: State<'_, App>, handle: AppHandle) -> CmdResult<UpdateState> {
     Ok(updates::check(&app, &handle).await)

@@ -3,6 +3,7 @@ import { CloseDialog, UpdateBar } from "./components/Desktop";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { Sidebar, Toasts, TopBar } from "./components/Shell";
 import { Button } from "./components/ui";
+import { WindowStrip } from "./components/WindowBar";
 import { inTauri, logLine } from "./lib/api";
 import { useApp } from "./lib/store";
 import { AccountsPage } from "./pages/Accounts";
@@ -44,6 +45,7 @@ export function App() {
   if (fatal) {
     return (
       <div className="flex h-full items-center justify-center p-10">
+        <WindowStrip />
         <div className="max-w-lg">
           <h1 className="heading text-[24px] font-semibold">IdleKit couldn't start</h1>
           <p className="mt-2 text-muted">{fatal}</p>
@@ -54,7 +56,13 @@ export function App() {
       </div>
     );
   }
-  if (!ready) return <div className="h-full" />;
+  if (!ready) {
+    return (
+      <div className="h-full">
+        <WindowStrip />
+      </div>
+    );
+  }
 
   return (
     <div className="flex h-full">

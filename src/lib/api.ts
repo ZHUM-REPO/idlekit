@@ -175,6 +175,8 @@ export const api = {
   /** Returns whether IdleKit is registered to start at sign-in afterwards. */
   setAutostart: (enabled: boolean) => call<boolean>("set_autostart", { enabled }),
   windowCloseChoice: (action: "tray" | "quit" | "cancel") => call<void>("window_close_choice", { action }),
+  /** The app's own title bar buttons and dragging. Answers whether the window is maximized. */
+  windowControl: (action: "minimize" | "maximize" | "close" | "drag" | "state") => call<boolean>("window_control", { action }),
   updateCheck: () => call<UpdateState>("update_check"),
   /** Resolves only on failure: a successful install replaces and restarts the app. */
   updateInstall: () => call<void>("update_install"),

@@ -105,6 +105,8 @@ export const ACTIONS: Record<string, Action> = {
 
   set_autostart: { label: "Start with the computer", detail: (a) => onOff(a.enabled) },
   window_close_choice: { label: "Answer the close question", detail: (a) => String(a.action) },
+  // Moving the window and asking its state are not worth a line each.
+  window_control: { label: "Window", detail: (a) => String(a.action), quiet: true },
   update_check: { label: "Check for updates" },
   update_install: { label: "Install the update" },
 };

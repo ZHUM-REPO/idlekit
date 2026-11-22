@@ -158,11 +158,11 @@ export function createMock() {
   const updateDemo = params.get("update");
   const update: UpdateState = {
     configured: updateDemo !== "off",
-    current: "0.6",
+    current: "0.7",
     phase: updateDemo === "downloading" ? "downloading" : "idle",
     available:
       updateDemo && updateDemo !== "off"
-        ? { version: "0.7", notes: "A sample release, for previewing how updates look." }
+        ? { version: "0.8", notes: "A sample release, for previewing how updates look." }
         : null,
     checkedAt: now - 4 * 60_000,
     error: updateDemo === "error" ? "Couldn't install the update: the connection was lost" : null,
@@ -281,7 +281,7 @@ export function createMock() {
   };
 
   const logs: LogLine[] = [
-    { ts: now - 3 * 3600_000, level: "info", scope: "app", message: "IdleKit 0.6 started" },
+    { ts: now - 3 * 3600_000, level: "info", scope: "app", message: "IdleKit 0.7 started" },
     { ts: now - 3 * 3600_000 + 2000, level: "info", scope: "direct", message: `${ALT} connected to Steam` },
     { ts: now - 3 * 3600_000 + 5000, level: "info", scope: "idle", message: "2 game(s) idling (auto)" },
     { ts: now - 2 * 3600_000, level: "info", scope: "farming", message: "Phase 1: building playtime on 3 game(s) under 2h" },
@@ -353,7 +353,7 @@ export function createMock() {
 
   const handlers: Record<string, (a: Record<string, any>) => unknown | Promise<unknown>> = {
     get_bootstrap: (): Bootstrap => ({
-      version: "0.6",
+      version: "0.7",
       dataDir: "C:\\Users\\you\\AppData\\Roaming\\dev.idlekit.app",
       settings,
       accounts: accounts.map(view),
@@ -642,6 +642,7 @@ export function createMock() {
 
     set_autostart: ({ enabled }) => (autostart = !!enabled),
     window_close_choice: () => undefined,
+    window_control: () => false,
     update_check: async () => {
       update.phase = "checking";
       update.error = null;
