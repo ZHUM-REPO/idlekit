@@ -31,6 +31,7 @@ export function UpdateBar() {
   const dismissed = useApp((s) => s.updateDismissed);
   const install = useApp((s) => s.installUpdate);
   const dismiss = useApp((s) => s.dismissUpdate);
+  const byItself = useApp((s) => !!s.settings?.checkUpdates && !!s.settings?.autoInstallUpdates);
   if (!u?.available) return null;
 
   const progress = updateProgressText(u);
@@ -47,10 +48,13 @@ export function UpdateBar() {
       ) : (
         <>
           <span className="min-w-0 flex-1">
-            {u.error ?? `IdleKit ${u.available.version} is available. You have ${u.current}.`}
+            {u.error ??
+              (byItself
+                ? `IdleKit ${u.available.version} is available (you have ${u.current}). It installs by itself once nothing is running.`
+                : `IdleKit ${u.available.version} is available. You have ${u.current}.`)}
           </span>
           <Button size="sm" variant="primary" onClick={() => void install()}>
-            {u.error ? "Try again" : "Install and restart"}
+            {u.error ? "Try again" : byItself ? "Install and restart now" : "Install and restart"}
           </Button>
           {u.releasesUrl && (
             <Button size="sm" variant="ghost" onClick={() => void openExternal(u.releasesUrl!)}>

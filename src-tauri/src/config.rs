@@ -152,6 +152,9 @@ pub struct Settings {
     pub start_in_tray: bool,
     /// Look for a newer version each time IdleKit opens.
     pub check_updates: bool,
+    /// Install a newer version without asking, when nothing is running that
+    /// the install would cut short.
+    pub auto_install_updates: bool,
     pub farming: FarmingSettings,
     pub unlocker: UnlockerSettings,
     pub market: MarketSettings,
@@ -175,6 +178,7 @@ impl Default for Settings {
             close_action: "ask".into(),
             start_in_tray: true,
             check_updates: true,
+            auto_install_updates: true,
             farming: FarmingSettings::default(),
             unlocker: UnlockerSettings::default(),
             market: MarketSettings::default(),

@@ -942,6 +942,7 @@ async fn market_wallet(ws: &WebSession) -> market::Wallet {
 #[tauri::command]
 pub async fn market_prices(app: State<'_, App>, steam_id: String, hash_names: Vec<String>) -> CmdResult<PriceReport> {
     app.market_cancel.store(false, Ordering::SeqCst);
+    let _job = app.market_job();
     let ws = app.web_session(&steam_id).await.map_err(anyhow_err)?;
     let s = app.settings().market;
     let wallet = market_wallet(&ws).await;
@@ -1008,6 +1009,7 @@ pub struct SellRequest {
 #[tauri::command]
 pub async fn market_sell(app: State<'_, App>, steam_id: String, items: Vec<SellRequest>) -> CmdResult<Vec<SellOutcome>> {
     app.market_cancel.store(false, Ordering::SeqCst);
+    let _job = app.market_job();
     let ws = app.web_session(&steam_id).await.map_err(anyhow_err)?;
     let delay = app.settings().market.delay_ms.max(500);
     let wallet = market_wallet(&ws).await;
@@ -1065,6 +1067,7 @@ pub async fn market_listings(app: State<'_, App>, steam_id: String) -> CmdResult
 #[tauri::command]
 pub async fn market_remove(app: State<'_, App>, steam_id: String, listing_ids: Vec<String>) -> CmdResult<usize> {
     app.market_cancel.store(false, Ordering::SeqCst);
+    let _job = app.market_job();
     let ws = app.web_session(&steam_id).await.map_err(anyhow_err)?;
     let delay = app.settings().market.delay_ms.max(500);
     let total = listing_ids.len();

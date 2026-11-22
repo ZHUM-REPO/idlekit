@@ -2,6 +2,15 @@
 
 The section for the version being released becomes the text of its release page.
 
+## 1.5
+
+- **Updates install by themselves.** When a newer version is found and nothing is running, IdleKit installs it and restarts, without asking. “Nothing running” means no idling, no card farming, no unlocking, no market work and no open achievement list. While something is running it waits, checks once a minute, and the bar offers “Install and restart now”. There is a switch for it under Settings → Updates; it is on.
+- **At startup the update comes first.** IdleKit looks for a newer version before it starts anything, so a PC that starts IdleKit at sign-in gets the new version before auto-idle or card farming begin. If it was started in the tray it comes back in the tray; if its window was open it comes back with the window open.
+- **It looks every half hour**, where it was every four hours.
+- **A look that fails is repeated much sooner:** once more after a few seconds, then after one, two and five minutes, then every ten. Before, the gaps were ten minutes three times and then an hour, which is why a new version could take a long time to show up on a connection that drops requests.
+- **The log says why a look failed.** “error sending request” is now followed by the reason, such as a timeout or a name that couldn't be found.
+- If an automatic install doesn't take, IdleKit doesn't try that version by itself again for twelve hours, so it can't restart over and over.
+
 ## 1.4
 
 - **Pages come back as you left them.** Opening another page used to reset a page to its defaults: the Library went back to “All games” sorted by “Name”, the Market to its Inventory tab, the Logs to everything.

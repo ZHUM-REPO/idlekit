@@ -17,6 +17,9 @@ const TRAY_ID: &str = "main";
 /// Left in the data folder before an update is installed, so the restarted app
 /// opens its window even when it was originally started in the tray.
 const SHOW_AFTER_UPDATE: &str = ".show-after-update";
+/// The other way round, for an update installed by itself while IdleKit was in
+/// the tray: the restarted app stays there.
+const HIDDEN_AFTER_UPDATE: &str = ".hidden-after-update";
 
 /// A tray icon exists. Without one the window is never hidden, because there
 /// would be nothing to click to bring it back.
@@ -68,20 +71,44 @@ fn hide_main(handle: &AppHandle) {
 /// setting on. A launch right after an update always shows the window.
 pub fn should_start_hidden(app: &App) -> bool {
     let after_update = std::fs::remove_file(app.data_dir.join(SHOW_AFTER_UPDATE)).is_ok();
+    let hidden_after_update = std::fs::remove_file(app.data_dir.join(HIDDEN_AFTER_UPDATE)).is_ok();
     let at_sign_in = std::env::args().any(|arg| arg == AUTOSTART_ARG);
-    start_hidden(at_sign_in, app.settings().start_in_tray, tray_ready(), after_update)
+    let hidden = start_hidden(at_sign_in, app.settings().start_in_tray, tray_ready(), after_update, hidden_after_update);
+    STARTED_HIDDEN.store(hidden, std::sync::atomic::Ordering::SeqCst);
+    hidden
 }
 
-fn start_hidden(at_sign_in: bool, start_in_tray: bool, tray: bool, after_update: bool) -> bool {
-    at_sign_in && start_in_tray && tray && !after_update
+/// Whether this run began in the tray, with no window shown.
+static STARTED_HIDDEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn started_hidden() -> bool {
+    STARTED_HIDDEN.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+fn start_hidden(at_sign_in: bool, start_in_tray: bool, tray: bool, after_update: bool, hidden_after_update: bool) -> bool {
+    tray && !after_update && (hidden_after_update || (at_sign_in && start_in_tray))
 }
 
 pub fn mark_show_after_update(app: &App) {
+    let _ = std::fs::remove_file(app.data_dir.join(HIDDEN_AFTER_UPDATE));
     let _ = std::fs::write(app.data_dir.join(SHOW_AFTER_UPDATE), b"");
 }
 
-pub fn clear_show_after_update(app: &App) {
+pub fn mark_hidden_after_update(app: &App) {
     let _ = std::fs::remove_file(app.data_dir.join(SHOW_AFTER_UPDATE));
+    let _ = std::fs::write(app.data_dir.join(HIDDEN_AFTER_UPDATE), b"");
+}
+
+pub fn clear_after_update(app: &App) {
+    let _ = std::fs::remove_file(app.data_dir.join(SHOW_AFTER_UPDATE));
+    let _ = std::fs::remove_file(app.data_dir.join(HIDDEN_AFTER_UPDATE));
+}
+
+/// Whether the window is on screen (not in the tray, not minimized).
+pub fn main_window_visible(handle: &AppHandle) -> bool {
+    handle
+        .get_webview_window(MAIN_WINDOW)
+        .is_some_and(|w| w.is_visible().unwrap_or(false) && !w.is_minimized().unwrap_or(false))
 }
 
 /// What a click on the close button does, given the saved choice.
@@ -281,11 +308,15 @@ mod tests {
 
     #[test]
     fn stays_in_the_tray_only_when_started_at_sign_in() {
-        assert!(start_hidden(true, true, true, false));
-        assert!(!start_hidden(false, true, true, false), "opened by the user");
-        assert!(!start_hidden(true, false, true, false), "setting off");
-        assert!(!start_hidden(true, true, false, false), "no tray to come back from");
-        assert!(!start_hidden(true, true, true, true), "just updated");
+        assert!(start_hidden(true, true, true, false, false));
+        assert!(!start_hidden(false, true, true, false, false), "opened by the user");
+        assert!(!start_hidden(true, false, true, false, false), "setting off");
+        assert!(!start_hidden(true, true, false, false, false), "no tray to come back from");
+        assert!(!start_hidden(true, true, true, true, false), "just updated from the window");
+        // updated by itself while in the tray: back in the tray, however it was started
+        assert!(start_hidden(false, false, true, false, true));
+        assert!(!start_hidden(false, false, false, false, true), "no tray to come back from");
+        assert!(!start_hidden(true, true, true, true, true), "asked for from the window wins");
     }
 
     #[test]

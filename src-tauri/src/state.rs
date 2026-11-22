@@ -11,7 +11,7 @@ use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 use std::ops::Deref;
 use std::path::PathBuf;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -66,6 +66,8 @@ pub struct Inner {
     /// appids with an open Achievement Manager view (keeps their helper alive)
     pub ach_open: Mutex<HashSet<u32>>,
     pub market_cancel: AtomicBool,
+    /// How many market jobs (pricing, listing, removing) are under way.
+    pub market_busy: AtomicUsize,
 }
 
 fn hide_account_names(cfg: &Config) {
@@ -74,7 +76,21 @@ fn hide_account_names(cfg: &Config) {
     }
 }
 
+/// Held while a market job runs, so an update isn't installed in the middle of one.
+pub struct MarketJob(App);
+
+impl Drop for MarketJob {
+    fn drop(&mut self) {
+        self.0.market_busy.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
 impl App {
+    pub fn market_job(&self) -> MarketJob {
+        self.market_busy.fetch_add(1, Ordering::SeqCst);
+        MarketJob(self.clone())
+    }
+
     pub fn new(data_dir: PathBuf, pictures_dir: PathBuf) -> Self {
         let config = Config::load(&data_dir);
         let art = ArtResolver::new(&data_dir);
@@ -97,6 +113,7 @@ impl App {
             naming: Mutex::new(HashMap::new()),
             ach_open: Mutex::new(HashSet::new()),
             market_cancel: AtomicBool::new(false),
+            market_busy: AtomicUsize::new(0),
         }))
     }
 

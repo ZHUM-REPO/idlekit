@@ -2190,7 +2190,7 @@ checksum = "b9e0384b61958566e926dc50660321d12159025e767c18e043daf26b70104c39"
 
 [[package]]
 name = "idlekit"
-version = "1.4.0"
+version = "1.5.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",

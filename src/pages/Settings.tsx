@@ -330,13 +330,25 @@ export function SettingsPage() {
           <Field
             inline
             label="Look for updates by itself"
-            hint="A few seconds after IdleKit opens, then every few hours for as long as it runs, the tray included. A newer version is offered, never installed without asking."
+            hint="When IdleKit opens, then every half hour for as long as it runs, the tray included."
           >
             <Switch
               label="Look for updates by itself"
               checked={s.checkUpdates}
               disabled={!canUpdate}
               onChange={(v) => void save({ checkUpdates: v })}
+            />
+          </Field>
+          <Field
+            inline
+            label="Install updates by itself"
+            hint="A newer version is installed without asking, and IdleKit restarts, when nothing is running: no idling, card farming, unlocking, market work or open achievement list. That includes the moment IdleKit starts, before it starts anything. While something is running it waits, and the update is offered as before."
+          >
+            <Switch
+              label="Install updates by itself"
+              checked={s.autoInstallUpdates}
+              disabled={!canUpdate || !s.checkUpdates}
+              onChange={(v) => void save({ autoInstallUpdates: v })}
             />
           </Field>
         </Group>

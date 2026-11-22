@@ -70,8 +70,12 @@ async fn startup(app: App, handle: AppHandle) {
     let cfg = app.config();
     let s = cfg.settings.clone();
     logbus::info("app", format!("IdleKit {} started", updates::shown(env!("CARGO_PKG_VERSION"))));
+    // With "install updates by itself" on: before anything is started, so a
+    // newer version is installed while nothing is running yet. Comes back
+    // unless it installed one.
+    updates::update_before_starting(&app, &handle).await;
     // On its own, so waiting for Steam below doesn't hold it up. It looks a
-    // few seconds from now and then every few hours for as long as IdleKit
+    // few seconds from now and then every half hour for as long as IdleKit
     // runs, whenever "look for updates" is on.
     tokio::spawn(updates::keep_looking(app.clone(), handle.clone()));
     if !app.helpers.helper_path().exists() {

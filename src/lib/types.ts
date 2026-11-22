@@ -61,6 +61,8 @@ export interface Settings {
   startInTray: boolean;
   /** Look for a newer version each time IdleKit opens. */
   checkUpdates: boolean;
+  /** Install a newer version without asking, when nothing is running. */
+  autoInstallUpdates: boolean;
   farming: FarmingSettings;
   unlocker: UnlockerSettings;
   market: MarketSettings;
