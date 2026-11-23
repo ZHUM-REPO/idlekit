@@ -1,3 +1,4 @@
+mod badge;
 mod commands;
 mod config;
 mod desktop;

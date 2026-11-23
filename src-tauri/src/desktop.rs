@@ -1,10 +1,11 @@
 //! Desktop integration: the tray icon, what the window's close button does,
 //! and starting IdleKit when the user signs in.
 use crate::state::App;
-use crate::{logbus, updates};
+use crate::{badge, logbus, updates};
 use serde::Serialize;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
+use tauri::image::Image;
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Emitter, Manager, Window, WindowEvent};
@@ -27,6 +28,10 @@ static TRAY_READY: AtomicBool = AtomicBool::new(false);
 /// The "keep running or quit?" question is on screen.
 static CLOSE_PROMPT_OPEN: AtomicBool = AtomicBool::new(false);
 static LAST_TOOLTIP: Mutex<String> = Mutex::new(String::new());
+/// Whether the tray icon shows its warning badge right now.
+static TRAY_WARNS: AtomicBool = AtomicBool::new(false);
+/// The tray icon as built, and the same with the warning badge.
+static TRAY_ICONS: OnceLock<Option<(Image<'static>, Image<'static>)>> = OnceLock::new();
 
 #[derive(Serialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
@@ -236,7 +241,7 @@ fn build_tray(handle: &AppHandle) -> tauri::Result<()> {
     Ok(())
 }
 
-fn tray_text(games: usize, farming: bool, unlocking: bool) -> String {
+fn tray_text(games: usize, farming: bool, unlocking: bool, not_signed_in: bool) -> String {
     let mut doing = Vec::new();
     if games > 0 {
         doing.push(format!("idling {games} {}", if games == 1 { "game" } else { "games" }));
@@ -247,14 +252,42 @@ fn tray_text(games: usize, farming: bool, unlocking: bool) -> String {
     if unlocking {
         doing.push("unlocking achievements".to_string());
     }
-    if doing.is_empty() {
-        "IdleKit".to_string()
-    } else {
-        format!("IdleKit: {}", doing.join(", "))
+    let mut text = if doing.is_empty() { "IdleKit".to_string() } else { format!("IdleKit: {}", doing.join(", ")) };
+    if not_signed_in {
+        // What the badge on the icon means.
+        text.push_str(if doing.is_empty() { ": " } else { "; " });
+        text.push_str("Steam client not signed in");
     }
+    text
 }
 
-/// Keep the tray icon's hover text in step with what is running.
+/// Whether the account selected in the window goes through the Steam client,
+/// and the client isn't signed in to it: the top bar then says "steam client
+/// not signed in", and the tray icon wears its warning badge.
+fn steam_not_signed_in(app: &App) -> bool {
+    let selected = app.with_config(|c| {
+        let account = c.active_account.as_deref().and_then(|id| c.account(id))?;
+        (account.mode != "direct").then(|| account.steam_id.clone())
+    });
+    let Some(steam_id) = selected else { return false };
+    app.local_steam().active_steam_id.as_deref() != Some(steam_id.as_str())
+}
+
+/// The tray icon as built, and the same with the warning badge, made once.
+fn tray_icons(handle: &AppHandle) -> Option<&'static (Image<'static>, Image<'static>)> {
+    TRAY_ICONS
+        .get_or_init(|| {
+            let icon = handle.default_window_icon()?;
+            let (width, height) = (icon.width(), icon.height());
+            let plain = Image::new_owned(icon.rgba().to_vec(), width, height);
+            let warning = Image::new_owned(badge::with_warning_badge(icon.rgba(), width, height), width, height);
+            Some((plain, warning))
+        })
+        .as_ref()
+}
+
+/// Keep the tray icon's hover text in step with what is running, and its
+/// warning badge with whether the Steam client is signed in.
 pub fn refresh_tray(handle: &AppHandle, app: &App) {
     if !tray_ready() {
         return;
@@ -262,15 +295,32 @@ pub fn refresh_tray(handle: &AppHandle, app: &App) {
     let games = app.idler.all().iter().map(|account| account.games.len()).sum();
     let farming = app.farming.all().iter().any(|f| f.running);
     let unlocking = app.unlocker.all().iter().any(|u| u.running);
-    let text = tray_text(games, farming, unlocking);
-    let mut last = LAST_TOOLTIP.lock().unwrap();
-    if *last == text {
-        return;
+    let not_signed_in = steam_not_signed_in(app);
+    let text = tray_text(games, farming, unlocking, not_signed_in);
+    let Some(tray) = handle.tray_by_id(TRAY_ID) else { return };
+    {
+        let mut last = LAST_TOOLTIP.lock().unwrap();
+        if *last != text {
+            let _ = tray.set_tooltip(Some(&text));
+            *last = text;
+        }
     }
-    if let Some(tray) = handle.tray_by_id(TRAY_ID) {
-        let _ = tray.set_tooltip(Some(&text));
+    if TRAY_WARNS.load(Ordering::SeqCst) != not_signed_in {
+        if let Some((plain, warning)) = tray_icons(handle) {
+            let icon = if not_signed_in { warning } else { plain };
+            if tray.set_icon(Some(icon.clone())).is_ok() {
+                TRAY_WARNS.store(not_signed_in, Ordering::SeqCst);
+                logbus::debug(
+                    "tray",
+                    if not_signed_in {
+                        "The Steam client isn't signed in to the selected account: the tray icon shows a warning"
+                    } else {
+                        "The Steam client is signed in to the selected account: the tray icon's warning is gone"
+                    },
+                );
+            }
+        }
     }
-    *last = text;
 }
 
 // ------------------------------------------------------- start at sign-in --
@@ -329,9 +379,12 @@ mod tests {
 
     #[test]
     fn tray_text_says_what_is_running() {
-        assert_eq!(tray_text(0, false, false), "IdleKit");
-        assert_eq!(tray_text(1, false, false), "IdleKit: idling 1 game");
-        assert_eq!(tray_text(3, true, false), "IdleKit: idling 3 games, farming cards");
-        assert_eq!(tray_text(0, false, true), "IdleKit: unlocking achievements");
+        assert_eq!(tray_text(0, false, false, false), "IdleKit");
+        assert_eq!(tray_text(1, false, false, false), "IdleKit: idling 1 game");
+        assert_eq!(tray_text(3, true, false, false), "IdleKit: idling 3 games, farming cards");
+        // With the warning badge on the icon, the hover text says what it means.
+        assert_eq!(tray_text(0, false, false, true), "IdleKit: Steam client not signed in");
+        assert_eq!(tray_text(2, false, false, true), "IdleKit: idling 2 games; Steam client not signed in");
+        assert_eq!(tray_text(0, false, true, false), "IdleKit: unlocking achievements");
     }
 }

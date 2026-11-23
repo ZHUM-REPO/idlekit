@@ -2,6 +2,10 @@
 
 The section for the version being released becomes the text of its release page.
 
+## 1.7
+
+- **The tray icon warns when the Steam client isn't signed in.** While the account selected in IdleKit uses the Steam client and the client isn't signed in to it, the tray icon wears a small amber warning sign in its bottom-right corner, and its hover text says "Steam client not signed in". The sign goes away within a few seconds of Steam signing in.
+
 ## 1.6
 
 Fixes from a review of the whole app, for card farming above all.
