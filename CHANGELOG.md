@@ -2,6 +2,12 @@
 
 The section for the version being released becomes the text of its release page.
 
+## 1.8
+
+- **Seven more themes.** Four dark ones: Obsidian (true black, for OLED screens), Harbor (deep blue-slate), Moss (green-grey) and Plum (purple). And three light ones: Paper (warm cream), Frost (cool blue-white) and High contrast (black on white with strong lines). Settings → Appearance shows the dark themes in one row and the light ones in the next.
+- **Ten running colors, and any color you pick.** Orange, Orchid, Blue, Mint and Silver join Amber, Rose, Violet, Cyan and Lime. On a light theme each one takes a deeper shade that reads on a light background, and the swatches show the shade that will be used. The last swatch opens a color picker for any color. The window takes the color while you pick, and text on it turns black or white, whichever reads better.
+- **The Market loads by itself.** Once the account has a web session, opening the Market loads your inventory and your listings, with no button to press. Signing in to a web session while the Market is open loads them too. They stay loaded while you look at other pages or switch accounts and back; Refresh loads them again. When Steam doesn't answer, you see the reason once, not once for each, and the Market tries again the next time you open it.
+
 ## 1.7
 
 - **The tray icon warns when the Steam client isn't signed in.** While the account selected in IdleKit uses the Steam client and the client isn't signed in to it, the tray icon wears a small amber warning sign in its bottom-right corner, and its hover text says "Steam client not signed in". The sign goes away within a few seconds of Steam signing in.

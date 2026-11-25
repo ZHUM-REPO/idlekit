@@ -42,8 +42,10 @@ export interface MarketSettings {
 }
 
 export interface Settings {
-  theme: "graphite" | "midnight" | "daylight";
-  accent: "amber" | "cyan" | "lime" | "rose" | "violet";
+  theme: "graphite" | "midnight" | "obsidian" | "harbor" | "moss" | "plum" | "daylight" | "paper" | "frost" | "contrast";
+  accent: "amber" | "orange" | "rose" | "orchid" | "violet" | "blue" | "cyan" | "mint" | "lime" | "silver" | "custom";
+  /** The running color picked by hand, as #rrggbb: used when accent is "custom". */
+  accentColor: string;
   /** Library cards: portrait cover art, or the wide banner. */
   cardStyle: "cover" | "banner";
   /** Keep games Steam labels as adult-only or as frequent nudity or sexual content out of every list. */

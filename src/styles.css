@@ -77,15 +77,159 @@
   --drum-shade: rgba(0, 0, 0, 0.12);
 }
 
-/* The accent only ever means "running". */
-:root[data-accent="cyan"] { --run: #3cc8e0; --run-ink: #04161a; }
-:root[data-accent="lime"] { --run: #a6d83a; --run-ink: #111705; }
+/* True black, for OLED screens. */
+:root[data-theme="obsidian"] {
+  color-scheme: dark;
+  --bg: #000000;
+  --panel: #0a0a0b;
+  --raised: #141416;
+  --well: #000000;
+  --line: #1f1f23;
+  --line-strong: #303036;
+  --ink: #ececec;
+  --muted: #a2a2a8;
+  --faint: #6c6c73;
+  --ok: #5fd38f;
+  --bad: #f26b5b;
+  --run: #f0b43c;
+  --run-ink: #1d1505;
+  --drum-shade: rgba(0, 0, 0, 0.6);
+}
+
+/* Deep blue-slate, near the Steam client's own colors. */
+:root[data-theme="harbor"] {
+  color-scheme: dark;
+  --bg: #151b23;
+  --panel: #1a222d;
+  --raised: #212c3a;
+  --well: #10151c;
+  --line: #263243;
+  --line-strong: #364659;
+  --ink: #dfe6ee;
+  --muted: #9dafc1;
+  --faint: #687b90;
+  --ok: #67cb90;
+  --bad: #ef6d62;
+  --run: #f0b43c;
+  --run-ink: #1d1505;
+  --drum-shade: rgba(0, 0, 0, 0.5);
+}
+
+/* Dark green-grey. */
+:root[data-theme="moss"] {
+  color-scheme: dark;
+  --bg: #121713;
+  --panel: #171e18;
+  --raised: #1e2720;
+  --well: #0d110e;
+  --line: #263027;
+  --line-strong: #364337;
+  --ink: #e4eae3;
+  --muted: #a2ada1;
+  --faint: #6c7a6b;
+  --ok: #74d6a0;
+  --bad: #ef6b5c;
+  --run: #f0b43c;
+  --run-ink: #1d1505;
+  --drum-shade: rgba(0, 0, 0, 0.45);
+}
+
+/* Dark purple. */
+:root[data-theme="plum"] {
+  color-scheme: dark;
+  --bg: #161220;
+  --panel: #1c1729;
+  --raised: #241e34;
+  --well: #100d18;
+  --line: #2d2641;
+  --line-strong: #3e3557;
+  --ink: #ece6f4;
+  --muted: #ab9fbe;
+  --faint: #74688a;
+  --ok: #64d09a;
+  --bad: #f2707a;
+  --run: #f0b43c;
+  --run-ink: #1d1505;
+  --drum-shade: rgba(0, 0, 0, 0.5);
+}
+
+/* Warm cream. */
+:root[data-theme="paper"] {
+  color-scheme: light;
+  --bg: #f1ece1;
+  --panel: #f8f4ec;
+  --raised: #fffdf8;
+  --well: #e7e0d2;
+  --line: #ddd4c3;
+  --line-strong: #c4b9a4;
+  --ink: #2a241c;
+  --muted: #625a4d;
+  --faint: #8d8474;
+  --ok: #23824e;
+  --bad: #b9392b;
+  --run: #a56400;
+  --run-ink: #fffaf0;
+  --drum-shade: rgba(60, 40, 10, 0.12);
+}
+
+/* Cool blue-white. */
+:root[data-theme="frost"] {
+  color-scheme: light;
+  --bg: #e6edf4;
+  --panel: #f1f5f9;
+  --raised: #ffffff;
+  --well: #dbe4ee;
+  --line: #cbd6e2;
+  --line-strong: #b1bfd0;
+  --ink: #17212c;
+  --muted: #4e5c6c;
+  --faint: #7d8a99;
+  --ok: #1a8455;
+  --bad: #c0392f;
+  --run: #9c6200;
+  --run-ink: #fffaf0;
+  --drum-shade: rgba(10, 30, 60, 0.12);
+}
+
+/* Black on white with strong lines, for reading ease. */
+:root[data-theme="contrast"] {
+  color-scheme: light;
+  --bg: #ffffff;
+  --panel: #ffffff;
+  --raised: #e8e8e8;
+  --well: #f4f4f4;
+  --line: #6b6b6b;
+  --line-strong: #000000;
+  --ink: #000000;
+  --muted: #1f1f1f;
+  --faint: #474747;
+  --ok: #00692b;
+  --bad: #a80000;
+  --run: #8a4b00;
+  --run-ink: #ffffff;
+  --drum-shade: rgba(0, 0, 0, 0.2);
+}
+
+/* The accent only ever means "running". Each comes in a light and a dark
+   shade: the dark one reads on light themes. Amber is each theme's own. */
+:root[data-accent="orange"] { --run: #ff9150; --run-ink: #1f0d02; }
 :root[data-accent="rose"] { --run: #f07a95; --run-ink: #1c070c; }
+:root[data-accent="orchid"] { --run: #e488e9; --run-ink: #1d0820; }
 :root[data-accent="violet"] { --run: #ab92ff; --run-ink: #120b26; }
-:root[data-theme="daylight"][data-accent="cyan"] { --run: #0a7a8e; --run-ink: #f0fcff; }
-:root[data-theme="daylight"][data-accent="lime"] { --run: #4d7a07; --run-ink: #f7fbe9; }
-:root[data-theme="daylight"][data-accent="rose"] { --run: #b02d52; --run-ink: #fff2f5; }
-:root[data-theme="daylight"][data-accent="violet"] { --run: #6544d4; --run-ink: #f6f2ff; }
+:root[data-accent="blue"] { --run: #6ea8ff; --run-ink: #061229; }
+:root[data-accent="cyan"] { --run: #3cc8e0; --run-ink: #04161a; }
+:root[data-accent="mint"] { --run: #48d7ab; --run-ink: #03170f; }
+:root[data-accent="lime"] { --run: #a6d83a; --run-ink: #111705; }
+:root[data-accent="silver"] { --run: #d4d8df; --run-ink: #15171b; }
+:root[data-tone="light"][data-accent="orange"] { --run: #b3500d; --run-ink: #fff6ef; }
+:root[data-tone="light"][data-accent="rose"] { --run: #b02d52; --run-ink: #fff2f5; }
+:root[data-tone="light"][data-accent="orchid"] { --run: #962d9c; --run-ink: #fdf2fd; }
+:root[data-tone="light"][data-accent="violet"] { --run: #6544d4; --run-ink: #f6f2ff; }
+:root[data-tone="light"][data-accent="blue"] { --run: #2658c2; --run-ink: #f1f5ff; }
+:root[data-tone="light"][data-accent="cyan"] { --run: #0a7a8e; --run-ink: #f0fcff; }
+:root[data-tone="light"][data-accent="mint"] { --run: #0b7a5c; --run-ink: #effcf6; }
+:root[data-tone="light"][data-accent="lime"] { --run: #4d7a07; --run-ink: #f7fbe9; }
+:root[data-tone="light"][data-accent="silver"] { --run: #3d434c; --run-ink: #f7f7f5; }
 
 :root {
   --run-soft: color-mix(in oklab, var(--run) 15%, transparent);

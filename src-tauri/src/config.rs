@@ -129,9 +129,13 @@ impl Default for MarketSettings {
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Settings {
-    /// UI theme id: "graphite" | "midnight" | "daylight".
+    /// UI theme id: "graphite" | "midnight" | "obsidian" | "harbor" | "moss" |
+    /// "plum" (dark), "daylight" | "paper" | "frost" | "contrast" (light).
     pub theme: String,
+    /// The running color: a preset's name, or "custom" for `accent_color`.
     pub accent: String,
+    /// The running color picked by hand, as #rrggbb.
+    pub accent_color: String,
     /// Library cards: "cover" (portrait art) | "banner" (wide art).
     pub card_style: String,
     /// Leave games Steam labels as adult-only or as frequent nudity or sexual
@@ -166,6 +170,7 @@ impl Default for Settings {
         Self {
             theme: "graphite".into(),
             accent: "amber".into(),
+            accent_color: "#f0b43c".into(),
             card_style: "cover".into(),
             hide_nsfw: false,
             language: "english".into(),
@@ -438,6 +443,11 @@ mod tests {
         );
         assert_eq!((old.views.market_filter.as_str(), old.views.logs_level.as_str()), ("all", "all"));
         assert_eq!(old.theme, "midnight");
+        // A running color picked by hand starts as the amber everyone had.
+        assert_eq!((old.accent.as_str(), old.accent_color.as_str()), ("amber", "#f0b43c"));
+        let picked: Settings = serde_json::from_str(r##"{"accent":"custom","accentColor":"#12ab9f"}"##).unwrap();
+        assert_eq!((picked.accent.as_str(), picked.accent_color.as_str()), ("custom", "#12ab9f"));
+        assert!(serde_json::to_string(&picked).unwrap().contains(r##""accentColor":"#12ab9f""##));
 
         // some choices saved, the rest keep their defaults
         let saved: Settings = serde_json::from_str(r#"{"views":{"librarySort":"playtime","logsLevel":"problems"}}"#).unwrap();

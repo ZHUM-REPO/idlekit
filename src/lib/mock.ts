@@ -61,6 +61,7 @@ const GAMES: [number, string, number][] = [
 const defaultSettings: Settings = {
   theme: "graphite",
   accent: "amber",
+  accentColor: "#f0b43c",
   cardStyle: "cover",
   hideNsfw: false,
   language: "english",
@@ -150,6 +151,7 @@ export function createMock() {
   const settings: Settings = structuredClone(defaultSettings);
   if (params.get("theme")) settings.theme = params.get("theme") as Settings["theme"];
   if (params.get("accent")) settings.accent = params.get("accent") as Settings["accent"];
+  if (params.get("color")) settings.accentColor = `#${params.get("color")}`;
   if (params.get("cards")) settings.cardStyle = params.get("cards") as Settings["cardStyle"];
   // `?hide=1` starts with "Hide NSFW games" on. `?nsfw=<appid>,<appid>` says
   // which sample games carry Steam's label (default: the one made-up sample).

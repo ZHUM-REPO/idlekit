@@ -66,6 +66,9 @@ interface State {
   refreshLocal(): Promise<void>;
   loadGames(steamId: string, refresh?: boolean): Promise<void>;
   saveSettings(patch: Partial<Settings>): Promise<void>;
+  /** Like saveSettings, for a choice that keeps changing while it is made (a
+   *  color being dragged): shown at once, written once the changes pause. */
+  saveSettingsSoon(patch: Partial<Settings>): void;
   setAutostart(enabled: boolean): Promise<void>;
   checkForUpdates(): Promise<void>;
   installUpdate(): Promise<void>;
@@ -82,11 +85,51 @@ let toastId = 1;
  *  useSyncExternalStore see a "change" on every render and loop forever. */
 export const EMPTY: never[] = [];
 
+/** The light themes: the preset running colors come in a darker shade for them. */
+export function isLightTheme(theme: string): boolean {
+  return ["daylight", "paper", "frost", "contrast"].includes(theme);
+}
+
+/** A color as the color picker gives it, #rrggbb; anything else isn't one. */
+export function hexColor(value: string | undefined): string | null {
+  return value && /^#[0-9a-f]{6}$/i.test(value) ? value.toLowerCase() : null;
+}
+
+/** How light a #rrggbb color looks, 0 to 1 (WCAG relative luminance). */
+function lightness(hex: string): number {
+  const [r, g, b] = [1, 3, 5]
+    .map((i) => parseInt(hex.slice(i, i + 2), 16) / 255)
+    .map((c) => (c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4));
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+}
+
+/** Near-black or white: whichever text reads better on this color. */
+export function inkOn(hex: string): string {
+  const [black, white] = ["#111111", "#ffffff"];
+  const contrast = (a: number, b: number) => (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05);
+  const l = lightness(hex);
+  return contrast(l, lightness(black)) >= contrast(l, lightness(white)) ? black : white;
+}
+
 function applyTheme(s: Settings) {
   const root = document.documentElement;
   root.dataset.theme = s.theme;
-  root.dataset.accent = s.accent;
+  root.dataset.tone = isLightTheme(s.theme) ? "light" : "dark";
+  // A running color picked by hand overrides the preset ones; without a
+  // usable color it falls back to the theme's own amber.
+  const picked = s.accent === "custom" ? hexColor(s.accentColor) : null;
+  root.dataset.accent = picked ? "custom" : s.accent === "custom" ? "amber" : s.accent;
+  if (picked) {
+    root.style.setProperty("--run", picked);
+    root.style.setProperty("--run-ink", inkOn(picked));
+  } else {
+    root.style.removeProperty("--run");
+    root.style.removeProperty("--run-ink");
+  }
 }
+
+/** The write saveSettingsSoon is holding back, while the changes go on. */
+let pendingWrite: ReturnType<typeof setTimeout> | undefined;
 
 /** Numbers log lines in the order the window got them. */
 let nextLine = 1;
@@ -245,11 +288,26 @@ export const useApp = create<State>((set, get) => ({
     const next = { ...cur, ...patch };
     set({ settings: next });
     applyTheme(next);
+    // This writes every setting, any held-back change included.
+    clearTimeout(pendingWrite);
     try {
       await api.saveSettings(next);
     } catch (e) {
       get().toast(errorText(e), "error");
     }
+  },
+
+  saveSettingsSoon(patch) {
+    const cur = get().settings;
+    if (!cur) return;
+    const next = { ...cur, ...patch };
+    set({ settings: next });
+    applyTheme(next);
+    clearTimeout(pendingWrite);
+    pendingWrite = setTimeout(() => {
+      const latest = get().settings;
+      if (latest) api.saveSettings(latest).catch((e) => get().toast(errorText(e), "error"));
+    }, 400);
   },
 
   async setAutostart(enabled) {
@@ -291,6 +349,9 @@ export const useApp = create<State>((set, get) => ({
   },
 
   toast(text, kind = "info") {
+    // The same message twice at once says nothing more: two loads that fail
+    // for one reason show it once.
+    if (get().toasts.some((t) => t.text === text && t.kind === kind)) return;
     const id = toastId++;
     set((s) => ({ toasts: [...s.toasts.slice(-3), { id, kind, text }] }));
     setTimeout(() => get().dismiss(id), kind === "error" ? 9000 : 4500);

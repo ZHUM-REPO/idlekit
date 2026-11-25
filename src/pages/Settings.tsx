@@ -1,23 +1,100 @@
+import { Pipette } from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
 import { updateProgressText } from "../components/Desktop";
 import { Button, Field, NumberInput, PageHeader, Section, Select, Switch, TextInput, cx, inputClass } from "../components/ui";
 import { openExternal } from "../lib/api";
-import { useApp } from "../lib/store";
+import { hexColor, isLightTheme, useApp } from "../lib/store";
 import type { FarmingSettings, MarketSettings, Settings, UnlockerSettings } from "../lib/types";
 
-const THEMES: { id: Settings["theme"]; label: string; bg: string; panel: string; ink: string }[] = [
+type Theme = { id: Settings["theme"]; label: string; bg: string; panel: string; ink: string };
+
+const DARK_THEMES: Theme[] = [
   { id: "graphite", label: "Graphite", bg: "#15171b", panel: "#22262c", ink: "#ebe8e2" },
   { id: "midnight", label: "Midnight", bg: "#0e1320", panel: "#1a2234", ink: "#e6eaf2" },
-  { id: "daylight", label: "Daylight", bg: "#eceeea", panel: "#ffffff", ink: "#1c1e22" },
+  { id: "obsidian", label: "Obsidian", bg: "#000000", panel: "#141416", ink: "#ececec" },
+  { id: "harbor", label: "Harbor", bg: "#151b23", panel: "#212c3a", ink: "#dfe6ee" },
+  { id: "moss", label: "Moss", bg: "#121713", panel: "#1e2720", ink: "#e4eae3" },
+  { id: "plum", label: "Plum", bg: "#161220", panel: "#241e34", ink: "#ece6f4" },
 ];
 
-const ACCENTS: { id: Settings["accent"]; label: string; color: string }[] = [
-  { id: "amber", label: "Amber", color: "#f0b43c" },
-  { id: "cyan", label: "Cyan", color: "#3cc8e0" },
-  { id: "lime", label: "Lime", color: "#a6d83a" },
-  { id: "rose", label: "Rose", color: "#f07a95" },
-  { id: "violet", label: "Violet", color: "#ab92ff" },
+const LIGHT_THEMES: Theme[] = [
+  { id: "daylight", label: "Daylight", bg: "#eceeea", panel: "#ffffff", ink: "#1c1e22" },
+  { id: "paper", label: "Paper", bg: "#f1ece1", panel: "#fffdf8", ink: "#2a241c" },
+  { id: "frost", label: "Frost", bg: "#e6edf4", panel: "#ffffff", ink: "#17212c" },
+  { id: "contrast", label: "High contrast", bg: "#ffffff", panel: "#e8e8e8", ink: "#000000" },
 ];
+
+/** The preset running colors, as styles.css has them: one shade for dark
+ *  themes and a deeper one that reads on light themes. */
+const ACCENTS: { id: Settings["accent"]; label: string; dark: string; light: string }[] = [
+  { id: "amber", label: "Amber", dark: "#f0b43c", light: "#a86b00" },
+  { id: "orange", label: "Orange", dark: "#ff9150", light: "#b3500d" },
+  { id: "rose", label: "Rose", dark: "#f07a95", light: "#b02d52" },
+  { id: "orchid", label: "Orchid", dark: "#e488e9", light: "#962d9c" },
+  { id: "violet", label: "Violet", dark: "#ab92ff", light: "#6544d4" },
+  { id: "blue", label: "Blue", dark: "#6ea8ff", light: "#2658c2" },
+  { id: "cyan", label: "Cyan", dark: "#3cc8e0", light: "#0a7a8e" },
+  { id: "mint", label: "Mint", dark: "#48d7ab", light: "#0b7a5c" },
+  { id: "lime", label: "Lime", dark: "#a6d83a", light: "#4d7a07" },
+  { id: "silver", label: "Silver", dark: "#d4d8df", light: "#3d434c" },
+];
+
+function ThemeButton({ theme, on, pick }: { theme: Theme; on: boolean; pick: () => void }) {
+  return (
+    <button
+      onClick={pick}
+      aria-pressed={on}
+      className={cx(
+        "flex items-center gap-2 rounded-lg border px-2.5 py-1.5 text-[13px]",
+        on ? "border-ink" : "border-line hover:border-line-strong",
+      )}
+    >
+      <span className="flex h-5 w-8 overflow-hidden rounded border border-black/20" aria-hidden="true">
+        <span className="w-1/2" style={{ background: theme.bg }} />
+        <span className="flex w-1/2 items-center justify-center" style={{ background: theme.panel }}>
+          <span className="h-0.5 w-2 rounded" style={{ background: theme.ink }} />
+        </span>
+      </span>
+      {theme.label}
+    </button>
+  );
+}
+
+/**
+ * Any running color, from the color picker. The window takes each color as it
+ * is picked; it is written to the settings once the picking pauses, not at
+ * every step of a drag.
+ */
+function AnyColor({ settings }: { settings: Settings }) {
+  const saveSoon = useApp((st) => st.saveSettingsSoon);
+  const on = settings.accent === "custom";
+  const color = hexColor(settings.accentColor) ?? "#f0b43c";
+  return (
+    <label
+      title="Any color"
+      className={cx(
+        "relative flex size-7 cursor-pointer items-center justify-center rounded-full border-2 has-[:focus-visible]:outline-2 has-[:focus-visible]:outline-offset-2 has-[:focus-visible]:outline-run",
+        on ? "border-ink" : "border-transparent",
+      )}
+    >
+      <span
+        className="flex size-5 items-center justify-center rounded-full"
+        style={{
+          background: on ? color : "conic-gradient(#f07a95, #f0b43c, #a6d83a, #48d7ab, #3cc8e0, #6ea8ff, #ab92ff, #e488e9, #f07a95)",
+        }}
+      >
+        {!on && <Pipette size={11} strokeWidth={2.5} className="text-black/70" aria-hidden="true" />}
+      </span>
+      <input
+        type="color"
+        aria-label="Any color"
+        value={color}
+        className="absolute inset-0 size-full cursor-pointer opacity-0"
+        onChange={(e) => saveSoon({ accent: "custom", accentColor: e.target.value })}
+      />
+    </label>
+  );
+}
 
 function Group({ title, children, note }: { title: string; children: ReactNode; note?: string }) {
   return (
@@ -39,6 +116,7 @@ export function SettingsPage() {
   if (!s) return null;
 
   const hasTray = !!desktop?.tray;
+  const light = isLightTheme(s.theme);
   const startLabel =
     desktop?.platform === "windows" ? "Start IdleKit when I sign in to Windows" : "Start IdleKit when I sign in";
 
@@ -51,29 +129,18 @@ export function SettingsPage() {
       <PageHeader title="Settings" sub="Changes save as you make them." />
       <div className="flex flex-col gap-5">
         <Group title="Appearance">
-          <Field inline label="Theme">
-            <div className="flex gap-2">
-              {THEMES.map((t) => (
-                <button
-                  key={t.id}
-                  onClick={() => void save({ theme: t.id })}
-                  aria-pressed={s.theme === t.id}
-                  className={cx(
-                    "flex items-center gap-2 rounded-lg border px-2.5 py-1.5 text-[13px]",
-                    s.theme === t.id ? "border-ink" : "border-line hover:border-line-strong",
-                  )}
-                >
-                  <span className="flex h-5 w-8 overflow-hidden rounded border border-black/20" aria-hidden="true">
-                    <span className="w-1/2" style={{ background: t.bg }} />
-                    <span className="flex w-1/2 items-center justify-center" style={{ background: t.panel }}>
-                      <span className="h-0.5 w-2 rounded" style={{ background: t.ink }} />
-                    </span>
-                  </span>
-                  {t.label}
-                </button>
+          <div className="flex items-start justify-between gap-6 py-2.5">
+            <div className="pt-1.5 text-[13px] text-ink">Theme</div>
+            <div className="flex flex-col items-end gap-2">
+              {[DARK_THEMES, LIGHT_THEMES].map((themes, row) => (
+                <div key={row} className="flex flex-wrap justify-end gap-2">
+                  {themes.map((t) => (
+                    <ThemeButton key={t.id} theme={t} on={s.theme === t.id} pick={() => void save({ theme: t.id })} />
+                  ))}
+                </div>
               ))}
             </div>
-          </Field>
+          </div>
           <Field inline label="Game cards" hint="How games look in the library. Covers are the tall artwork from the Steam library; banners are the wide store image.">
             <div className="flex gap-2">
               {(
@@ -106,8 +173,8 @@ export function SettingsPage() {
           >
             <Switch label="Hide NSFW games" checked={s.hideNsfw} onChange={(v) => void save({ hideNsfw: v })} />
           </Field>
-          <Field inline label="Running color" hint="Marks anything that is currently running.">
-            <div className="flex gap-2">
+          <Field inline label="Running color" hint="Marks anything that is currently running. The last one takes any color you pick.">
+            <div className="flex flex-wrap justify-end gap-1.5">
               {ACCENTS.map((a) => (
                 <button
                   key={a.id}
@@ -120,9 +187,10 @@ export function SettingsPage() {
                     s.accent === a.id ? "border-ink" : "border-transparent",
                   )}
                 >
-                  <span className="size-5 rounded-full" style={{ background: a.color }} />
+                  <span className="size-5 rounded-full" style={{ background: light ? a.light : a.dark }} />
                 </button>
               ))}
+              <AnyColor settings={s} />
             </div>
           </Field>
         </Group>

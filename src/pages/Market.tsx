@@ -1,13 +1,14 @@
 import { RefreshCw, Search, Tag, Trash } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Button, Callout, Empty, Modal, PageHeader, Pill, Select, Tabs, TextInput, cx, inputClass } from "../components/ui";
 import { api } from "../lib/api";
 import { HiddenNotice } from "../components/HiddenNotice";
-import { US_DOLLAR_WALLET, money, sellerReceives } from "../lib/format";
+import { money, sellerReceives } from "../lib/format";
 import { useAppIds, useHiding } from "../lib/hidden";
 import { useKept, useView } from "../lib/kept";
+import { useMarket, useMarketStore } from "../lib/market";
 import { useActiveAccount, useApp, useEnsureGames } from "../lib/store";
-import type { Account, InvItem, Listing, PriceInfo, Wallet } from "../lib/types";
+import type { Account, InvItem } from "../lib/types";
 
 const CLASS_LABEL: Record<InvItem["class"], string> = {
   card: "Trading card",
@@ -23,8 +24,14 @@ export function MarketPage() {
   const account = useActiveAccount();
   const [tab, setTab] = useView("marketTab");
   const go = useApp((s) => s.go);
+  const steamId = account?.steamId;
+  const noWeb = !account || (!account.hasToken && !account.hasCookie);
+  // With a web session, the inventory and the listings load by themselves,
+  // once while IdleKit runs; Refresh asks again.
+  useEffect(() => {
+    if (steamId && !noWeb) useMarketStore.getState().loadByItself(steamId);
+  }, [steamId, noWeb]);
   if (!account) return null;
-  const noWeb = !account.hasToken && !account.hasCookie;
   return (
     <div className="pb-10">
       <PageHeader
@@ -97,10 +104,7 @@ function gameOf(item: InvItem): number {
 function Inventory({ account }: { account: Account }) {
   const run = useApp((s) => s.run);
   const settings = useApp((s) => s.settings)!;
-  const [items, setItems] = useState<InvItem[] | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [prices, setPrices] = useState<Record<string, PriceInfo>>({});
-  const [wallet, setWallet] = useState<Wallet>(US_DOLLAR_WALLET);
+  const { items, itemsLoading: loading, prices, wallet } = useMarket(account.steamId);
   const currency = wallet.currency;
   const [qty, setQty] = useState<Record<string, number>>({});
   const [price, setPrice] = useState<Record<string, string>>({});
@@ -110,15 +114,9 @@ function Inventory({ account }: { account: Account }) {
   const [busy, setBusy] = useState<string | null>(null);
   const [confirm, setConfirm] = useState(false);
 
-  const load = async () => {
-    setLoading(true);
-    const r = await run(null, () => api.inventory(account.steamId));
-    if (r) {
-      setItems(r);
-      setSelected(new Set());
-    }
-    setLoading(false);
-  };
+  const load = () => useMarketStore.getState().loadInventory(account.steamId);
+  // A fresh inventory starts with nothing selected.
+  useEffect(() => setSelected(new Set()), [items]);
 
   // "Hide NSFW games" goes by the game each item comes from.
   const itemGames = useMemo(() => items?.map(gameOf).filter((id) => id > 0), [items]);
@@ -159,12 +157,17 @@ function Inventory({ account }: { account: Account }) {
     });
 
   if (!items) {
-    return (
+    return loading ? (
+      <Empty
+        title="Loading your inventory…"
+        body="Reading the Steam inventory (cards, emoticons, backgrounds, boosters) for this account. Nothing is listed until you confirm."
+      />
+    ) : (
       <Empty
         title="Load your inventory"
         body="Reads the Steam inventory (cards, emoticons, backgrounds, boosters) for this account. Nothing is listed until you confirm."
         action={
-          <Button variant="primary" busy={loading} onClick={() => void load()}>
+          <Button variant="primary" onClick={() => void load()}>
             Load inventory
           </Button>
         }
@@ -219,10 +222,7 @@ function Inventory({ account }: { account: Account }) {
             onClick={async () => {
               setBusy("price");
               const r = await run(null, () => api.prices(account.steamId, [...selected]));
-              if (r) {
-                setWallet(r.wallet);
-                setPrices((p) => ({ ...p, ...Object.fromEntries(r.items.map((x) => [x.marketHashName, x])) }));
-              }
+              if (r) useMarketStore.getState().priced(account.steamId, r.wallet, r.items);
               setBusy(null);
             }}
           >
@@ -373,7 +373,9 @@ function Inventory({ account }: { account: Account }) {
                         `Listed ${ok} of ${r.length}${conf ? `; confirm ${conf} in the Steam Mobile app` : ""}`,
                         ok === r.length ? "ok" : "error",
                       );
+                    // What was listed leaves the inventory and joins the listings.
                     void load();
+                    void useMarketStore.getState().loadListings(account.steamId);
                   }
                 }}
               >
@@ -389,7 +391,7 @@ function Inventory({ account }: { account: Account }) {
 
 function Listings({ account }: { account: Account }) {
   const run = useApp((s) => s.run);
-  const [all, setList] = useState<Listing[] | null>(null);
+  const { listings: all, listingsLoading: loading } = useMarket(account.steamId);
   // A listing only names its game ("<game> Trading Card"), so "Hide NSFW
   // games" goes by the names of the games in the library that it hides.
   useEnsureGames(account.steamId);
@@ -402,27 +404,22 @@ function Listings({ account }: { account: Account }) {
     const names = games.filter((g) => hiding.hides(g.appid) && g.name.trim()).map((g) => g.name.trim().toLowerCase());
     return all.filter((l) => !names.some((name) => l.game.toLowerCase().startsWith(name)));
   }, [all, games, hiding]);
-  const [loading, setLoading] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [busy, setBusy] = useState(false);
 
-  const load = async () => {
-    setLoading(true);
-    const r = await run(null, () => api.listings(account.steamId));
-    if (r) {
-      setList(r);
-      setSelected(new Set());
-    }
-    setLoading(false);
-  };
+  const load = () => useMarketStore.getState().loadListings(account.steamId);
+  // Fresh listings start with nothing selected.
+  useEffect(() => setSelected(new Set()), [all]);
 
   if (!list) {
-    return (
+    return loading ? (
+      <Empty title="Loading your listings…" body="What you have for sale, and anything still waiting for mobile confirmation." />
+    ) : (
       <Empty
         title="Load your listings"
         body="Shows what you have for sale and anything still waiting for mobile confirmation."
         action={
-          <Button variant="primary" busy={loading} onClick={() => void load()}>
+          <Button variant="primary" onClick={() => void load()}>
             Load listings
           </Button>
         }
