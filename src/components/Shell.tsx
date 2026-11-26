@@ -1,4 +1,6 @@
 import {
+  CalendarClock,
+  CalendarDays,
   ChevronDown,
   Layers,
   Library,
@@ -12,6 +14,7 @@ import {
 } from "lucide-react";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { inTauri } from "../lib/api";
+import { countdown, dayRange, isOn, nextEvent, useEvents, useEventsKeptFresh } from "../lib/events";
 import { useNow } from "../lib/hooks";
 import { pictureBroken, usePicture } from "../lib/pictures";
 import { dragRegion, WindowControls } from "./WindowBar";
@@ -23,9 +26,10 @@ import { cx } from "./ui";
 const NAV: { page: Page; label: string; icon: ReactNode }[] = [
   { page: "library", label: "Library", icon: <Library size={17} /> },
   { page: "idling", label: "Idling", icon: <Timer size={17} /> },
-  { page: "farming", label: "Card farming", icon: <Layers size={17} /> },
+  { page: "farming", label: "Card Farming", icon: <Layers size={17} /> },
   { page: "achievements", label: "Achievements", icon: <Trophy size={17} /> },
   { page: "market", label: "Market", icon: <Store size={17} /> },
+  { page: "events", label: "Upcoming Events", icon: <CalendarDays size={17} /> },
 ];
 
 const NAV_BOTTOM: { page: Page; label: string; icon: ReactNode }[] = [
@@ -49,7 +53,50 @@ function Logo() {
   );
 }
 
+/**
+ * The sale or fest that is on, or the next one, in a square above Accounts:
+ * how long until it starts (or ends), its name and its days. In a short
+ * window it gives up the big number and fits in a few lines.
+ */
+function NextEvent({ onPage, open }: { onPage: boolean; open: () => void }) {
+  const events = useEvents((s) => s.list?.events);
+  const now = useNow(30_000, !!events?.length);
+  const next = events ? nextEvent(events, now) : null;
+  const left = next ? countdown(next, now) : null;
+  if (!next || !left) return <div className="mt-auto" />;
+  const on = isOn(next, now);
+  return (
+    <div className="mt-auto pt-3 pb-3">
+      <button
+        onClick={open}
+        title={`${next.name}: ${left.words}. Open Upcoming Events.`}
+        className={cx(
+          "flex aspect-square w-full flex-col justify-between rounded-xl border p-3.5 text-left transition-colors",
+          "short-window:aspect-auto short-window:gap-2",
+          on ? "border-run/45 bg-run-soft hover:border-run/70" : "border-line bg-well hover:border-line-strong",
+          onPage && !on && "border-line-strong",
+        )}
+      >
+        <span className="flex items-center gap-1.5 text-[12px] text-muted">
+          {on ? <span className="lamp on" /> : <CalendarClock size={13} className="text-faint" />}
+          {on ? "On now" : "Next event"}
+        </span>
+        <span className="short-window:hidden">
+          <span className={cx("num heading block text-[46px] font-semibold leading-none", on && "text-run")}>{left.value}</span>
+          <span className="mt-1.5 block text-[12px] text-muted">{left.unit}</span>
+        </span>
+        <span className="block">
+          <span className="line-clamp-2 text-[15px] leading-snug font-semibold text-ink">{next.name}</span>
+          <span className="num mt-1 block text-[12px] text-muted">{dayRange(next)}</span>
+          <span className="mt-0.5 hidden text-[12px] text-muted short-window:block">{left.words}</span>
+        </span>
+      </button>
+    </div>
+  );
+}
+
 export function Sidebar() {
+  useEventsKeptFresh();
   const page = useApp((s) => s.page);
   const go = useApp((s) => s.go);
   const version = useApp((s) => s.version);
@@ -89,7 +136,8 @@ export function Sidebar() {
         </span>
       </div>
       <div className="flex flex-col gap-0.5">{NAV.map(item)}</div>
-      <div className="mt-auto flex flex-col gap-0.5 border-t border-line pt-3">{NAV_BOTTOM.map(item)}</div>
+      <NextEvent onPage={page === "events"} open={() => go("events")} />
+      <div className="flex flex-col gap-0.5 border-t border-line pt-3">{NAV_BOTTOM.map(item)}</div>
       {newer ? (
         // Stays for as long as a newer version exists, also after its bar was closed.
         <button
@@ -285,7 +333,7 @@ export function TopBar() {
           />
           <Gauge
             on={!!farm?.running}
-            label="Card farming"
+            label="Card Farming"
             value={
               farm?.running
                 ? farm.phase === "scanning"

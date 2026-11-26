@@ -58,7 +58,7 @@ export function FarmingPage() {
   return (
     <div className="pb-10">
       <PageHeader
-        title="Card farming"
+        title="Card Farming"
         sub="Reads your badge pages to find games that still have trading card drops, then idles them until the drops run out."
         actions={
           running ? (

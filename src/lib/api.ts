@@ -4,11 +4,12 @@ import { invoke as tauriInvoke } from "@tauri-apps/api/core";
 import { listen as tauriListen, type UnlistenFn } from "@tauri-apps/api/event";
 import { endLine, startLine } from "./actions";
 import type {
-  AchView,
   Account,
+  AchView,
   AuthEvent,
   Bootstrap,
   CmStatus,
+  EventList,
   FarmGame,
   FarmStatus,
   GameArtUrls,
@@ -108,6 +109,8 @@ export const api = {
   setActiveAccount: (steamId: string) => call<void>("set_active_account", { steamId }),
   detectLocalSteam: () => call<LocalSteam>("detect_local_steam"),
   logs: () => call<LogLine[]>("get_logs"),
+  /** Steam's upcoming sales and fests. `refresh` reads Valve's page again; otherwise the list read last will do. */
+  steamEvents: (refresh: boolean) => call<EventList>("steam_events", { refresh }),
   clearLogs: () => call<void>("clear_logs"),
   /** Opens the folder that holds log.txt, with the file selected. */
   openLogFile: () => call<void>("open_log_file"),

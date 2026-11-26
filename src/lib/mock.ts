@@ -8,6 +8,7 @@ import type {
   AuthEvent,
   Bootstrap,
   CmStatus,
+  EventList,
   FarmStatus,
   GameEntry,
   IdleGame,
@@ -16,6 +17,7 @@ import type {
   LogLine,
   PriceInfo,
   Settings,
+  SteamEvent,
   UnlockStatus,
   UpdateState,
 } from "./types";
@@ -141,6 +143,41 @@ const ACH_NAMES = [
   ["Hidden depths", "Reach the lowest floor."],
   ["Online regular", "Win 50 online matches."],
 ];
+
+/**
+ * Steam's schedule as the preview shows it: dated from today, so there is
+ * always something on and something coming. 10 AM Pacific is 18:00 UTC here,
+ * as in winter.
+ */
+function sampleEvents(now: number): SteamEvent[] {
+  const DAY = 24 * 60 * 60_000;
+  const today = new Date(now);
+  today.setUTCHours(18, 0, 0, 0);
+  const at = (days: number) => today.getTime() + days * DAY;
+  const year = (days: number) => new Date(at(days)).getUTCFullYear();
+  const month = (days: number) => new Date(at(days)).toLocaleDateString("en-US", { month: "long", year: "numeric", timeZone: "UTC" });
+  const event = (name: string, kind: SteamEvent["kind"], from: number, to: number): SteamEvent => ({
+    name,
+    kind,
+    firstDay: new Date(at(from)).toISOString().slice(0, 10),
+    lastDay: new Date(at(to)).toISOString().slice(0, 10),
+    starts: at(from),
+    ends: at(to),
+  });
+  return [
+    event("Auto-Battler RPG Fest", "fest", -11, -4),
+    event(`Black Friday ${year(-1)}`, "event", -1, 3),
+    event(`Winter Sale ${year(20)}`, "sale", 20, 38),
+    event("Desktop Companion Fest", "fest", 48, 52),
+    event("Shop Keeper Fest", "fest", 59, 66),
+    event("Sheep Fest", "fest", 69, 73),
+    event("Couch Co-Op Fest", "fest", 73, 80),
+    event(`Next Fest: ${month(87)}`, "nextfest", 87, 94),
+    event("Rhythm Fest", "fest", 101, 108),
+    event(`Spring Sale ${year(111)}`, "sale", 111, 118),
+    { name: `Autumn Sale ${year(111)}`, kind: "sale", firstDay: null, lastDay: null, starts: null, ends: null },
+  ];
+}
 
 export function createMock() {
   const listeners = new Map<string, Set<Cb>>();
@@ -409,6 +446,17 @@ export function createMock() {
     },
     detect_local_steam: () => handlers.get_bootstrap({}) && (handlers.get_bootstrap({}) as Bootstrap).localSteam,
     get_logs: () => logs,
+    // `?events=down`: Valve's page can't be read, the list that came with the
+    // app is shown. `?events=none`: nothing on the schedule. `?events=next`:
+    // nothing on right now, only events to come.
+    steam_events: async ({ refresh }) => {
+      await delay(refresh ? 600 : 150);
+      const mode = params.get("events");
+      const sample = sampleEvents(now).filter((e) => mode !== "next" || e.starts == null || e.starts > now);
+      const list: EventList = { events: mode === "none" ? [] : sample, fetchedAt: refresh ? Date.now() : now, from: "valve" };
+      if (mode === "down") return { ...list, fetchedAt: null, from: "built-in", error: "Valve's page couldn't be reached" };
+      return list;
+    },
     log_event: ({ level, scope, message }) => {
       const line = { ts: Date.now(), level, scope, message };
       logs.push(line);

@@ -1,6 +1,10 @@
 @import "@fontsource-variable/inter/wght.css";
 @import "tailwindcss" source(".");
 
+/* A window too short for the sidebar's event square at full size (the
+   window can be made as short as 640). */
+@custom-variant short-window (@media (max-height: 699px));
+
 @theme inline {
   --color-bg: var(--bg);
   --color-panel: var(--panel);

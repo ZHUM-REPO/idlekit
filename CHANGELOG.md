@@ -2,6 +2,12 @@
 
 The section for the version being released becomes the text of its release page.
 
+## 1.9
+
+- **Upcoming Events.** A new page in the sidebar lists Steam's upcoming sales and fests: the seasonal sales, Next Fest and the themed fests, grouped by month, with their days and times in your time zone and how long until each starts. The list comes from Valve's own schedule on the Steamworks site, is read again every day at midnight (or when you press Refresh), and is kept for when the site can't be reached.
+- **The next event, in the sidebar.** A square above Accounts shows the sale or fest that's on, or the next one: the days to go (or left), its name and its days. Clicking it opens Upcoming Events. In a short window it shrinks to a few lines.
+- **Card Farming, with a capital F**, in the sidebar, the top bar and on its page, like the other names there.
+
 ## 1.8
 
 - **Seven more themes.** Four dark ones: Obsidian (true black, for OLED screens), Harbor (deep blue-slate), Moss (green-grey) and Plum (purple). And three light ones: Paper (warm cream), Frost (cool blue-white) and High contrast (black on white with strong lines). Settings → Appearance shows the dark themes in one row and the light ones in the next.

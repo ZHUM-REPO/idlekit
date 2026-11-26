@@ -311,6 +311,7 @@ pub fn run() {
             commands::save_settings,
             commands::set_active_account,
             commands::detect_local_steam,
+            commands::steam_events,
             commands::get_logs,
             commands::clear_logs,
             commands::add_local_account,

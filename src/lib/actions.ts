@@ -30,6 +30,8 @@ export const ACTIONS: Record<string, Action> = {
   get_accounts: { label: "Refresh accounts", quiet: true },
   detect_local_steam: { label: "Look for the Steam client", quiet: true },
   get_logs: { label: "Read the log", quiet: true },
+  // The backend says what it read, or why it couldn't.
+  steam_events: { label: "Read Steam's upcoming events", detail: (a) => (a.refresh ? "from Valve's page" : "as kept"), quiet: true },
   farm_status: { label: "Read farming status", quiet: true },
   resolve_game_art: { label: "Look up game pictures", detail: (a) => `${count(a.appids)} game(s)`, quiet: true },
   // Pictures are counted by the backend: one line per run, not two per picture.

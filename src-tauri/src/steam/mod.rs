@@ -19,6 +19,7 @@ pub mod art;
 pub mod auth;
 pub mod cm;
 pub mod community;
+pub mod events;
 pub mod helper;
 pub mod jwt;
 pub mod kv_binary;

@@ -359,3 +359,26 @@ export interface Bootstrap {
   desktop: DesktopInfo;
   update: UpdateState;
 }
+
+/** One of Steam's sales or fests, from Valve's schedule. */
+export interface SteamEvent {
+  /** As Valve names it: "Winter Sale 2026", "Racing Fest", "Next Fest: February 2027". */
+  name: string;
+  /** The seasonal sales, the themed fests, Next Fest, or anything else ("event"). */
+  kind: "sale" | "fest" | "nextfest" | "event";
+  /** The first and last day as Valve gives them (YYYY-MM-DD); null while the dates are to be decided. */
+  firstDay: string | null;
+  lastDay: string | null;
+  /** When it starts and ends (ms). Steam changes over at 10 AM Pacific time. */
+  starts: number | null;
+  ends: number | null;
+}
+
+export interface EventList {
+  events: SteamEvent[];
+  /** When the list was read from Valve's page; null for the list this version came with. */
+  fetchedAt: number | null;
+  from: "valve" | "built-in";
+  /** Why Valve's page couldn't be read this time, when it couldn't. */
+  error?: string;
+}

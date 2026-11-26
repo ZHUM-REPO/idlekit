@@ -145,6 +145,12 @@ pub async fn detect_local_steam(app: State<'_, App>) -> CmdResult<LocalSteam> {
     Ok(app.local_steam())
 }
 
+/// Steam's upcoming sales and fests. `refresh` reads Valve's page again.
+#[tauri::command]
+pub async fn steam_events(app: State<'_, App>, refresh: bool) -> CmdResult<crate::steam::events::EventList> {
+    Ok(app.steam_events(refresh).await)
+}
+
 #[tauri::command]
 pub async fn get_logs() -> CmdResult<Vec<LogLine>> {
     Ok(logbus::recent())

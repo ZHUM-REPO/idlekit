@@ -18,8 +18,8 @@ import type {
   UpdateState,
 } from "./types";
 
-export type Page = "library" | "idling" | "farming" | "achievements" | "market" | "accounts" | "settings" | "logs";
-const PAGES: Page[] = ["library", "idling", "farming", "achievements", "market", "accounts", "settings", "logs"];
+export type Page = "library" | "idling" | "farming" | "achievements" | "market" | "events" | "accounts" | "settings" | "logs";
+const PAGES: Page[] = ["library", "idling", "farming", "achievements", "market", "events", "accounts", "settings", "logs"];
 
 export interface Toast {
   id: number;

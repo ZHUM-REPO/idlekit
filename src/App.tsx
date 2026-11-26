@@ -8,6 +8,7 @@ import { inTauri, logLine } from "./lib/api";
 import { useApp } from "./lib/store";
 import { AccountsPage } from "./pages/Accounts";
 import { AchievementsPage } from "./pages/Achievements";
+import { EventsPage } from "./pages/Events";
 import { FarmingPage } from "./pages/Farming";
 import { IdlingPage } from "./pages/Idling";
 import { LibraryPage } from "./pages/Library";
@@ -90,6 +91,7 @@ export function App() {
             {page === "farming" && <FarmingPage />}
             {page === "achievements" && <AchievementsPage />}
             {page === "market" && <MarketPage />}
+            {page === "events" && <EventsPage />}
             {page === "accounts" && <AccountsPage />}
             {page === "settings" && <SettingsPage />}
             {page === "logs" && <LogsPage />}
