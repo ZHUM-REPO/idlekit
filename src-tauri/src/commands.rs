@@ -20,7 +20,7 @@ use crate::updates::{self, UpdateState};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::time::Duration;
 use tauri::{AppHandle, State};
 
@@ -929,6 +929,8 @@ pub async fn unlock_stop(app: State<'_, App>, steam_id: String) -> CmdResult<()>
 pub async fn market_inventory(app: State<'_, App>, steam_id: String) -> CmdResult<Vec<InvItem>> {
     let started = std::time::Instant::now();
     let items = app.with_web(&steam_id, |ws| async move { market::inventory(&ws).await }).await.map_err(anyhow_err)?;
+    // What each item is, for the market's search to be asked by kind.
+    app.remember_classes(&items);
     logbus::debug(
         "market",
         format!("Inventory of {}: {} item(s) in {} ms", logbus::label(&steam_id), items.len(), started.elapsed().as_millis()),
@@ -986,8 +988,8 @@ fn now_ms() -> i64 {
     chrono::Utc::now().timestamp_millis()
 }
 
-/// An item's price for the window, from its order book as seen: with the
-/// price to ask, by the strategy in the settings, and what that leaves you.
+/// An item's price for the window, as seen: with the price to ask, by the
+/// strategy in the settings, and what that leaves you.
 fn price_info(name: &str, wallet: &market::Wallet, seen: &pricing::Seen, s: &crate::config::MarketSettings) -> PriceInfo {
     let suggested = market::suggest_price(
         wallet,
@@ -1007,6 +1009,7 @@ fn price_info(name: &str, wallet: &market::Wallet, seen: &pricing::Seen, s: &cra
         suggested,
         you_receive: suggested.map(|price| wallet.seller_receives(price)),
         checked_at: seen.checked_at,
+        offers_at: seen.offers_at,
         problem: None,
     }
 }
@@ -1066,27 +1069,362 @@ async fn price_wallet(app: &App, ws: &WebSession, steam_id: &str) -> (market::Wa
     }
 }
 
-/// "about 12 min left", for the progress bar.
-fn time_left(items: usize, every: Duration) -> String {
-    let secs = (items as f64 * every.as_secs_f64()).round() as u64;
+/// "Checking prices, about 12 min left", for the progress bar.
+fn time_left(doing: &str, requests: usize, every: Duration) -> String {
+    let secs = (requests as f64 * every.as_secs_f64()).round() as u64;
     match secs {
-        0..=59 => "Checking prices, less than a minute left".into(),
-        60..=5399 => format!("Checking prices, about {} min left", secs.div_ceil(60)),
-        _ => format!("Checking prices, about {:.1} h left", secs as f64 / 3600.0),
+        0..=59 => format!("{doing}, less than a minute left"),
+        60..=5399 => format!("{doing}, about {} min left", secs.div_ceil(60)),
+        _ => format!("{doing}, about {:.1} h left", secs as f64 / 3600.0),
     }
 }
 
-/// Prices of inventory items, from Steam's order books. What was checked in
-/// the last hour comes at once, from the kept list, unless it is in
-/// `recheck`; the rest is asked about a few at a time, in the order given,
-/// and each price goes to the window (`market://prices`) as it comes. A
-/// newer request for prices, or a listing job, takes over from this one.
+/// Why an item has no price when Steam doesn't trade it.
+const NO_MARKET: &str = "Steam has no market for this item";
+
+/// What the progress bar says while items are still without a price, and
+/// while all that is missing is their buy orders.
+const CHECKING: &str = "Checking prices";
+const READING_OFFERS: &str = "Prices are in. Reading buy orders";
+
+/// The market's search isn't asked for prices again for this long after its
+/// prices came in another currency than the wallet's, and after it didn't
+/// answer as a search does.
+const SEARCHES_OFF_OTHER_CURRENCY: Duration = Duration::from_secs(6 * 3600);
+const SEARCHES_OFF_NO_GOOD: Duration = Duration::from_secs(3600);
+
+/// What an error from one of the market's lookups means to a run.
+fn refusal<T>(e: &anyhow::Error) -> pricing::Answer<T> {
+    match community::steam_busy(e) {
+        Some(429) => pricing::Answer::Busy,
+        Some(_) => pricing::Answer::Trouble(format!("{e}")),
+        None if community::connection_failed(e) => pricing::Answer::Trouble(format!("no answer from Steam ({})", e.root_cause())),
+        None => pricing::Answer::Failed(format!("{e:#}")),
+    }
+}
+
+/// A run waits: says so in the log and on the progress bar.
+fn say_pause(pause: Duration, slower: Duration, cause: pricing::Cause, done: usize, total: usize) {
+    let (why, short) = match cause {
+        pricing::Cause::TooMany => ("Steam asked IdleKit to slow down", "Steam asked to slow down"),
+        pricing::Cause::Trouble => ("Steam had trouble answering several times in a row", "Steam is having trouble"),
+    };
+    logbus::info(
+        "market",
+        format!(
+            "{why}: price checks wait {} s, then go on one every {:.1} s ({done} of {total} done)",
+            pause.as_secs(),
+            slower.as_secs_f64()
+        ),
+    );
+    progress("prices", done, total, format!("{short}: waiting {} s", pause.as_secs()));
+}
+
+/// "41 s" or "17 min".
+fn took_words(secs: f64) -> String {
+    if secs < 90.0 {
+        format!("{secs:.0} s")
+    } else {
+        format!("{} min", (secs / 60.0).ceil())
+    }
+}
+
+/// The first round of a price check: the market's search, which answers for
+/// a hundred items at a time with each one's cheapest listing. What it
+/// works with, and what came of it so far.
+struct Searching<'a> {
+    app: &'a App,
+    steam_id: &'a str,
+    settings: &'a crate::config::MarketSettings,
+    wallet: market::Wallet,
+    plan: &'a pricing::Plan,
+    /// The items to price.
+    wanted: &'a HashSet<&'a str>,
+    stopped: &'a (dyn Fn() -> bool + Sync),
+    /// Set for the run to stop: the prices are in another currency than the
+    /// wallet's (which one), or the answers are no search's (`why_no_good`).
+    other_currency: &'a AtomicU32,
+    no_good: &'a AtomicBool,
+    why_no_good: String,
+    prices: &'a mut HashMap<String, PriceInfo>,
+    /// The items the searches have priced.
+    priced: HashSet<String>,
+    /// Requests sent, and whether any was answered as a search is.
+    requests: usize,
+    answered: bool,
+    /// Where each search's further answers start (`<search>:<start>`).
+    further: Vec<String>,
+    every: Duration,
+    paused_for: Duration,
+}
+
+/// A search's request as a run knows it: which search, and from where.
+fn search_job(job: &str) -> (usize, usize) {
+    let (search, start) = job.split_once(':').unwrap_or((job, "0"));
+    (search.parse().unwrap_or(0), start.parse().unwrap_or(0))
+}
+
+impl Searching<'_> {
+    fn hear(&mut self, news: pricing::News<'_, market::SearchPage>) {
+        match news {
+            pricing::News::Answered(job, pricing::Answer::Got(page)) => {
+                self.requests += 1;
+                self.answered = true;
+                let (search, start) = search_job(job);
+                let what = &self.plan.searches[search];
+                if let Some(other) = page.found.iter().map(|f| f.currency).find(|&c| c != self.wallet.currency) {
+                    self.other_currency.store(other, Ordering::SeqCst);
+                    return;
+                }
+                if start == 0 {
+                    match pricing::further_starts(what, page.total, page.results) {
+                        Some(starts) => self.further.extend(starts.into_iter().map(|from| format!("{search}:{from}"))),
+                        None => {
+                            self.why_no_good =
+                                format!("a search for the {} of {} game(s) came back with {} items", what.kind.words(), what.games.len(), page.total);
+                            self.no_good.store(true, Ordering::SeqCst);
+                            return;
+                        }
+                    }
+                }
+                let now = now_ms();
+                let mut new = Vec::new();
+                for found in &page.found {
+                    let Some(lowest) = found.lowest_sell else { continue };
+                    if !self.wanted.contains(found.hash_name.as_str()) || self.priced.contains(&found.hash_name) {
+                        continue;
+                    }
+                    let seen = self.app.with_prices(|list| {
+                        let before = list.get(found.currency, &found.hash_name);
+                        let seen = pricing::Seen::of_search(lowest, found.sell_listings, now, before.as_ref());
+                        list.put(found.currency, &found.hash_name, seen);
+                        seen
+                    });
+                    let info = price_info(&found.hash_name, &self.wallet, &seen, self.settings);
+                    self.prices.insert(found.hash_name.clone(), info.clone());
+                    self.priced.insert(found.hash_name.clone());
+                    new.push(info);
+                }
+                logbus::debug(
+                    "market",
+                    format!(
+                        "Market search, {} of {} game(s), from {start}: {} of its {} item(s), {} of them asked for",
+                        what.kind.words(),
+                        what.games.len(),
+                        page.results,
+                        page.total,
+                        new.len()
+                    ),
+                );
+                if !new.is_empty() {
+                    emit_prices(self.steam_id, &self.wallet, new);
+                }
+                // The bar stays for the buy orders: it isn't shown as full here.
+                if !(self.stopped)() && self.priced.len() < self.wanted.len() {
+                    let left = self.plan.requests().saturating_sub(self.requests).max(1);
+                    progress("prices", self.priced.len(), self.wanted.len(), time_left(CHECKING, left, self.every));
+                }
+            }
+            pricing::News::Answered(job, pricing::Answer::Failed(why)) => {
+                self.requests += 1;
+                if self.answered {
+                    // One answer among good ones: its items are priced one by one.
+                    logbus::warn("market", format!("Market search (request {job}): {why}"));
+                } else if !self.no_good.swap(true, Ordering::SeqCst) {
+                    self.why_no_good = why;
+                }
+            }
+            // A search has no other last words.
+            pricing::News::Answered(..) => {}
+            pricing::News::Again(job, why, next_try) => {
+                logbus::debug("market", format!("Market search (request {job}): {why}; asking again later (try {next_try} of 3)"));
+            }
+            pricing::News::Pausing { pause, every, cause } => {
+                self.every = every;
+                self.paused_for += pause;
+                self.app.save_prices();
+                say_pause(pause, every, cause, self.priced.len(), self.wanted.len());
+            }
+        }
+    }
+}
+
+/// The second round of a price check: each item's order book, one request
+/// an item, which tells its buy orders too. What it works with, and what
+/// came of it so far.
+struct Reading<'a> {
+    app: &'a App,
+    steam_id: &'a str,
+    settings: &'a crate::config::MarketSettings,
+    stopped: &'a (dyn Fn() -> bool + Sync),
+    /// Set for the run to stop: Steam's lookup doesn't work.
+    broken: &'a AtomicBool,
+    wallet: market::Wallet,
+    wallet_from: WalletFrom,
+    prices: HashMap<String, PriceInfo>,
+    /// What the progress bar says is going on, and how many answers it
+    /// takes until every item has a price: from then on, it is buy orders.
+    doing: &'static str,
+    prices_until: usize,
+    total: usize,
+    every: Duration,
+    done: usize,
+    /// Items that got no price, and items that kept the search's price
+    /// because their order book couldn't be read.
+    unpriced: usize,
+    unread: usize,
+    /// What was learned goes to disk every few answers, and while waiting
+    /// out a pause, so quitting halfway keeps most of it.
+    since_saved: usize,
+    saved_at: std::time::Instant,
+    problems_told: usize,
+    told_currency: bool,
+    answered: bool,
+    failed_from_start: usize,
+    first_problem: String,
+    not_on_market: Vec<String>,
+    paused_for: Duration,
+}
+
+impl Reading<'_> {
+    /// The item's price from the market's search, when it has one of this hour.
+    fn searched(&self, name: &str) -> Option<pricing::Seen> {
+        let now = now_ms();
+        self.app
+            .with_prices(|list| list.get(self.wallet.currency, name))
+            .filter(|seen| seen.lowest_sell.is_some() && seen.fresh(now))
+    }
+
+    fn hear(&mut self, news: pricing::News<'_>) {
+        match news {
+            pricing::News::Again(name, why, next_try) => {
+                logbus::debug("market", format!("{name}: {why}; asking again later (try {next_try} of 3)"));
+            }
+            pricing::News::Answered(name, answer) => {
+                let info = match answer {
+                    pricing::Answer::Got(book) => {
+                        self.answered = true;
+                        let checked = now_ms();
+                        self.app.with_prices(|list| list.put(book.currency, name, pricing::Seen::of(&book, checked)));
+                        self.since_saved += 1;
+                        if book.currency != self.wallet.currency
+                            && self.wallet_from != WalletFrom::Page
+                            && self.wallet_from != WalletFrom::Prices
+                        {
+                            // The wallet was a guess, or from before: Steam's prices say which currency it is now.
+                            self.wallet = market::Wallet::standard(book.currency, false);
+                            self.wallet_from = WalletFrom::Prices;
+                            self.app.with_prices(|list| list.forget_wallet(self.steam_id));
+                            logbus::info("market", "Steam's prices came in another currency than IdleKit had for this account's wallet; using theirs, with Steam's standard fees");
+                        }
+                        if book.currency == self.wallet.currency {
+                            Some(price_info(name, &self.wallet, &pricing::Seen::of(&book, checked), self.settings))
+                        } else {
+                            self.unpriced += 1;
+                            if !self.told_currency {
+                                self.told_currency = true;
+                                logbus::warn("market", "Steam gave prices in another currency than this account's wallet: those were left out");
+                            }
+                            Some(no_price(name, &self.wallet, "Steam gave its price in another currency than your wallet's"))
+                        }
+                    }
+                    pricing::Answer::NotOnMarket => {
+                        self.answered = true;
+                        match self.searched(name) {
+                            // The search has it for sale: nobody is buying, then.
+                            Some(mut seen) => {
+                                (seen.highest_buy, seen.offers_at) = (None, now_ms());
+                                self.app.with_prices(|list| list.put(self.wallet.currency, name, seen));
+                                self.since_saved += 1;
+                                logbus::debug("market", format!("{name}: Steam has no order book for this item; the search's price stays"));
+                                Some(price_info(name, &self.wallet, &seen, self.settings))
+                            }
+                            None => {
+                                self.unpriced += 1;
+                                self.not_on_market.push(name.to_string());
+                                self.app.note_no_market(name, now_ms());
+                                logbus::debug("market", format!("{name}: {NO_MARKET}"));
+                                Some(no_price(name, &self.wallet, NO_MARKET))
+                            }
+                        }
+                    }
+                    pricing::Answer::Failed(why) | pricing::Answer::Trouble(why) => {
+                        self.problems_told += 1;
+                        if !self.answered {
+                            self.failed_from_start += 1;
+                            if self.first_problem.is_empty() {
+                                self.first_problem = why.clone();
+                            }
+                            if self.failed_from_start >= 8 {
+                                self.broken.store(true, Ordering::SeqCst);
+                            }
+                        }
+                        if self.problems_told <= 5 {
+                            logbus::warn("market", format!("{name}: {why}"));
+                        } else {
+                            logbus::debug("market", format!("{name}: {why}"));
+                        }
+                        if self.searched(name).is_some() {
+                            // The search's price stays; only the buy orders are missing.
+                            self.unread += 1;
+                            None
+                        } else {
+                            self.unpriced += 1;
+                            Some(no_price(name, &self.wallet, format!("Couldn't get a price: {why}")))
+                        }
+                    }
+                    pricing::Answer::Busy => return,
+                };
+                if let Some(info) = info {
+                    emit_prices(self.steam_id, &self.wallet, vec![info.clone()]);
+                    self.prices.insert(name.to_string(), info);
+                }
+                self.done += 1;
+                if self.done >= self.prices_until {
+                    self.doing = READING_OFFERS;
+                }
+                if !(self.stopped)() {
+                    progress("prices", self.done, self.total, time_left(self.doing, self.total - self.done, self.every));
+                }
+                if self.since_saved >= 10 || (self.since_saved > 0 && self.saved_at.elapsed() >= Duration::from_secs(30)) {
+                    self.save();
+                }
+            }
+            pricing::News::Pausing { pause, every, cause } => {
+                self.every = every;
+                self.paused_for += pause;
+                if self.since_saved > 0 {
+                    self.save();
+                }
+                say_pause(pause, every, cause, self.done, self.total);
+            }
+        }
+    }
+
+    fn save(&mut self) {
+        self.since_saved = 0;
+        self.saved_at = std::time::Instant::now();
+        self.app.save_prices();
+    }
+}
+
+/// Prices of inventory items. What was checked in the last hour comes at
+/// once, from the kept list, unless it is in `recheck`. The rest comes in
+/// two rounds: the market's search, a hundred items an answer, gives each
+/// item's cheapest listing within a minute or so (when there are enough
+/// items for it, and its prices are in the wallet's currency); then each
+/// item's order book, a few at a time, gives its buy orders too: the items
+/// in `first` (the ones ticked) before any other, then those the search had
+/// no price for, then the rest in the order given. Each price goes to the
+/// window (`market://prices`) as it comes. A newer request for prices, or a
+/// listing job, takes over from this one.
 #[tauri::command]
 pub async fn market_prices(
     app: State<'_, App>,
     steam_id: String,
     hash_names: Vec<String>,
     recheck: Option<Vec<String>>,
+    first: Option<Vec<String>>,
 ) -> CmdResult<PriceReport> {
     let app = app.inner().clone();
     let run = app.price_runs.fetch_add(1, Ordering::SeqCst) + 1;
@@ -1094,7 +1432,7 @@ pub async fn market_prices(
     let _job = app.market_job();
     let ws = app.web_session(&steam_id).await.map_err(anyhow_err)?;
     let settings = app.settings().market;
-    let (mut wallet, mut wallet_from) = price_wallet(&app, &ws, &steam_id).await;
+    let (wallet, wallet_from) = price_wallet(&app, &ws, &steam_id).await;
 
     // Each item once, in the order given.
     let mut named = HashSet::new();
@@ -1102,7 +1440,9 @@ pub async fn market_prices(
     let again: HashSet<&str> = recheck.iter().flatten().map(String::as_str).collect();
     let now = now_ms();
     let mut prices: HashMap<String, PriceInfo> = HashMap::new();
-    let mut to_ask = Vec::new();
+    // The items whose cheapest listing is due, and those whose buy orders
+    // are: the first are among the second.
+    let (mut to_price, mut to_read) = (Vec::new(), Vec::new());
     app.with_prices(|list| {
         for name in &names {
             // With no idea of the currency, nothing kept can be trusted to be in it.
@@ -1110,8 +1450,17 @@ pub async fn market_prices(
             if let Some(seen) = &kept {
                 prices.insert(name.clone(), price_info(name, &wallet, seen, &settings));
             }
-            if again.contains(name.as_str()) || !kept.is_some_and(|seen| seen.fresh(now)) {
-                to_ask.push(name.clone());
+            let asked_again = again.contains(name.as_str());
+            if let (false, Some(at)) = (asked_again, app.no_market_since(name, now)) {
+                // Steam said so within the hour: it isn't asked again.
+                prices.insert(name.clone(), PriceInfo { checked_at: at, ..no_price(name, &wallet, NO_MARKET) });
+                continue;
+            }
+            if asked_again || !kept.is_some_and(|seen| seen.fresh(now)) {
+                to_price.push(name.clone());
+            }
+            if asked_again || !kept.is_some_and(|seen| seen.offers_fresh(now)) {
+                to_read.push(name.clone());
             }
         }
     });
@@ -1123,7 +1472,7 @@ pub async fn market_prices(
     if !prices.is_empty() {
         emit_prices(&steam_id, &wallet, names.iter().filter_map(|n| prices.get(n).cloned()).collect());
     }
-    if to_ask.is_empty() {
+    if to_read.is_empty() {
         return Ok(report(&prices, wallet));
     }
 
@@ -1134,38 +1483,30 @@ pub async fn market_prices(
     // Steam's lookup failing for item after item, from the start, is a lookup
     // that doesn't work (Steam changed something): asking about the rest
     // would only fail the same way.
-    let broken = std::sync::atomic::AtomicBool::new(false);
+    let broken = AtomicBool::new(false);
     let stop = || cancelled() || app.price_runs.load(Ordering::SeqCst) != run || broken.load(Ordering::SeqCst);
     if stop() {
         return Ok(report(&prices, wallet));
     }
-    let total = to_ask.len();
-    let mut every = Duration::from_millis(settings.delay_ms.max(300));
-    let pace = pricing::Pace { every, at_once: 3 };
+    let total = to_read.len();
+    let every = Duration::from_millis(settings.delay_ms.max(300));
+    let pace = |every: Duration| pricing::Pace { every, at_once: 3, patience: pricing::PAUSES_BEFORE_GIVING_UP };
     let started = std::time::Instant::now();
-    progress("prices", 0, total, time_left(total, every));
     // Order-book numbers kept from Steam's old market: a way in when asking
     // by name fails, for the items that have one.
     let by_number: HashMap<String, u64> = if wallet_from == WalletFrom::Assumed {
         HashMap::new()
     } else {
-        app.with_config(|c| to_ask.iter().filter_map(|n| Some((n.clone(), *c.item_name_ids.get(n)?))).collect())
+        app.with_config(|c| to_read.iter().filter_map(|n| Some((n.clone(), *c.item_name_ids.get(n)?))).collect())
     };
     let currency = wallet.currency;
     let ask = |name: String| {
         let (ws, number) = (&*ws, by_number.get(&name).copied());
         async move {
             let answer = |r: anyhow::Result<Option<market::Book>>| match r {
-                Ok(Some(book)) => pricing::Answer::Book(book),
+                Ok(Some(book)) => pricing::Answer::Got(book),
                 Ok(None) => pricing::Answer::NotOnMarket,
-                Err(e) => match community::steam_busy(&e) {
-                    Some(429) => pricing::Answer::Busy,
-                    Some(_) => pricing::Answer::Trouble(format!("{e}")),
-                    None if community::connection_failed(&e) => {
-                        pricing::Answer::Trouble(format!("no answer from Steam ({})", e.root_cause()))
-                    }
-                    None => pricing::Answer::Failed(format!("{e:#}")),
-                },
+                Err(e) => refusal(&e),
             };
             match (answer(market::order_book_by_name(ws, &name).await), number) {
                 (pricing::Answer::Failed(why), Some(id)) => {
@@ -1179,118 +1520,218 @@ pub async fn market_prices(
             }
         }
     };
-    let (mut done, mut unpriced, mut since_saved) = (0usize, 0usize, 0usize);
-    // What was learned goes to disk every few answers, and while waiting
-    // out a pause, so quitting halfway keeps most of it.
-    let mut saved_at = std::time::Instant::now();
-    let mut problems_told = 0;
-    let mut told_currency = false;
-    let (mut answered, mut failed_from_start) = (false, 0usize);
-    let mut first_problem = String::new();
-    let mut not_on_market: Vec<String> = Vec::new();
-    let mut paused_for = Duration::ZERO;
-    let end = pricing::run(to_ask, pace, &mut pacer, stop, ask, |news| match news {
-        pricing::News::Again(name, why, next_try) => {
-            logbus::debug("market", format!("{name}: {why}; asking again later (try {next_try} of 3)"));
+    let mut reading = Reading {
+        app: &app,
+        steam_id: &steam_id,
+        settings: &settings,
+        stopped: &stop,
+        broken: &broken,
+        wallet,
+        wallet_from,
+        prices,
+        doing: CHECKING,
+        prices_until: total,
+        total,
+        every,
+        done: 0,
+        unpriced: 0,
+        unread: 0,
+        since_saved: 0,
+        saved_at: std::time::Instant::now(),
+        problems_told: 0,
+        told_currency: false,
+        answered: false,
+        failed_from_start: 0,
+        first_problem: String::new(),
+        not_on_market: Vec::new(),
+        paused_for: Duration::ZERO,
+    };
+
+    // The searches that cover the items to price, and whether they are the
+    // faster way: they are from a dozen items up.
+    let classes = app.classes_of(&to_price);
+    let plan = pricing::Plan::of(to_price.iter().zip(&classes).map(|(name, class)| (name.as_str(), class.as_deref())));
+    let mut search = plan.worth_it();
+    if search {
+        if let Some(why) = app.searches_off() {
+            logbus::debug("market", format!("Steam's market search isn't asked for prices for now ({why}): they are checked one item at a time"));
+            search = false;
         }
-        pricing::News::Answered(name, answer) => {
-            let info = match answer {
-                pricing::Answer::Book(book) => {
-                    answered = true;
-                    let checked = now_ms();
-                    app.with_prices(|list| list.put(book.currency, name, pricing::Seen::of(&book, checked)));
-                    since_saved += 1;
-                    if book.currency != wallet.currency && wallet_from != WalletFrom::Page && wallet_from != WalletFrom::Prices {
-                        // The wallet was a guess, or from before: Steam's prices say which currency it is now.
-                        wallet = market::Wallet::standard(book.currency, false);
-                        wallet_from = WalletFrom::Prices;
-                        app.with_prices(|list| list.forget_wallet(&steam_id));
-                        logbus::info("market", "Steam's prices came in another currency than IdleKit had for this account's wallet; using theirs, with Steam's standard fees");
-                    }
-                    if book.currency == wallet.currency {
-                        price_info(name, &wallet, &pricing::Seen::of(&book, checked), &settings)
-                    } else {
-                        unpriced += 1;
-                        if !told_currency {
-                            told_currency = true;
-                            logbus::warn("market", "Steam gave prices in another currency than this account's wallet: those were left out");
-                        }
-                        no_price(name, &wallet, "Steam gave its price in another currency than your wallet's")
-                    }
-                }
-                pricing::Answer::NotOnMarket => {
-                    answered = true;
-                    unpriced += 1;
-                    not_on_market.push(name.to_string());
-                    logbus::debug("market", format!("{name}: Steam has no market for this item"));
-                    no_price(name, &wallet, "Steam has no market for this item")
-                }
-                pricing::Answer::Failed(why) | pricing::Answer::Trouble(why) => {
-                    unpriced += 1;
-                    problems_told += 1;
-                    if !answered {
-                        failed_from_start += 1;
-                        if first_problem.is_empty() {
-                            first_problem = why.clone();
-                        }
-                        if failed_from_start >= 8 {
-                            broken.store(true, Ordering::SeqCst);
-                        }
-                    }
-                    if problems_told <= 5 {
-                        logbus::warn("market", format!("{name}: {why}"));
-                    } else {
-                        logbus::debug("market", format!("{name}: {why}"));
-                    }
-                    no_price(name, &wallet, format!("Couldn't get a price: {why}"))
-                }
-                pricing::Answer::Busy => return,
-            };
-            emit_prices(&steam_id, &wallet, vec![info.clone()]);
-            prices.insert(name.to_string(), info);
-            done += 1;
-            if !stop() {
-                progress("prices", done, total, time_left(total - done, every));
-            }
-            if since_saved >= 10 || (since_saved > 0 && saved_at.elapsed() >= Duration::from_secs(30)) {
-                since_saved = 0;
-                saved_at = std::time::Instant::now();
-                app.save_prices();
-            }
+    }
+    let searches_ahead = if search { plan.requests() } else { 0 };
+    progress("prices", 0, total, time_left(CHECKING, if search { searches_ahead } else { total }, every));
+
+    let mut end = pricing::RunEnd::Done;
+    let mut read_first = 0;
+    // What the searches came to: how many items they priced, of how many.
+    let mut searched: Option<(usize, usize)> = None;
+    if search && reading.wallet_from == WalletFrom::Assumed {
+        // The market page told no wallet: one order book says which currency
+        // this account's prices come in, before the search is held to it.
+        end = pricing::run(vec![to_read[0].clone()], pace(every), &mut pacer, &stop, &ask, |news| reading.hear(news)).await;
+        read_first = 1;
+        if reading.wallet_from == WalletFrom::Assumed {
+            logbus::debug("market", "Which currency this account's prices come in isn't known: the market's search isn't asked");
+            search = false;
         }
-        pricing::News::Pausing { pause, every: slower, cause } => {
-            every = slower;
-            paused_for += pause;
-            if since_saved > 0 {
-                since_saved = 0;
-                saved_at = std::time::Instant::now();
-                app.save_prices();
+    }
+    // The items still without a price of this hour, after the search.
+    let mut unpriced: HashSet<&str> = to_price.iter().map(String::as_str).collect();
+    if read_first == 1 {
+        unpriced.remove(to_read[0].as_str());
+    }
+    if search && end == pricing::RunEnd::Done {
+        let wanted = unpriced.clone();
+        let other_currency = AtomicU32::new(0);
+        let no_good = AtomicBool::new(false);
+        let halt = || stop() || other_currency.load(Ordering::SeqCst) != 0 || no_good.load(Ordering::SeqCst);
+        let wallet = reading.wallet;
+        logbus::debug(
+            "market",
+            format!(
+                "Quick prices: asking Steam's market search about {} item(s) of {} game(s), in about {} request(s)",
+                plan.covered,
+                plan.games(),
+                plan.requests()
+            ),
+        );
+        let ask_search = |job: String| {
+            let (search, start) = search_job(&job);
+            let (ws, what) = (&*ws, &plan.searches[search]);
+            async move {
+                match market::search(ws, what, wallet.currency, start).await {
+                    Ok(page) => pricing::Answer::Got(page),
+                    Err(e) => refusal(&e),
+                }
             }
-            let why = match cause {
-                pricing::Cause::TooMany => "Steam asked IdleKit to slow down",
-                pricing::Cause::Trouble => "Steam had trouble answering several times in a row",
-            };
+        };
+        let mut searching = Searching {
+            app: &app,
+            steam_id: &steam_id,
+            settings: &settings,
+            wallet,
+            plan: &plan,
+            wanted: &wanted,
+            stopped: &stop,
+            other_currency: &other_currency,
+            no_good: &no_good,
+            why_no_good: String::new(),
+            prices: &mut reading.prices,
+            priced: HashSet::new(),
+            requests: 0,
+            answered: false,
+            further: Vec::new(),
+            every: reading.every,
+            paused_for: Duration::ZERO,
+        };
+        // Refused twice in a row, the searches are given up on: the order
+        // books, which Steam is known to answer at this pace, take over.
+        let search_pace = |every: Duration| pricing::Pace { patience: pricing::PAUSES_BEFORE_NO_SEARCH, ..pace(every) };
+        // Each search's first answer says how many more it has.
+        let first: Vec<String> = (0..plan.searches.len()).map(|k| format!("{k}:0")).collect();
+        end = pricing::run(first, search_pace(searching.every), &mut pacer, &halt, &ask_search, |news| searching.hear(news)).await;
+        if end == pricing::RunEnd::Done && !halt() && !searching.further.is_empty() {
+            let further = std::mem::take(&mut searching.further);
+            end = pricing::run(further, search_pace(searching.every), &mut pacer, &halt, &ask_search, |news| searching.hear(news)).await;
+        }
+        // A slower pace Steam asked of the searches stays theirs: the order
+        // books have their own, and are slowed when Steam asks it of them.
+        let Searching { priced, requests, why_no_good, paused_for, .. } = searching;
+        app.save_prices();
+        reading.paused_for += paused_for;
+        for name in &priced {
+            unpriced.remove(name.as_str());
+        }
+        let other = other_currency.load(Ordering::SeqCst);
+        if other != 0 {
+            // Nothing was stopped but the searches.
+            end = pricing::RunEnd::Done;
+            app.turn_searches_off(SEARCHES_OFF_OTHER_CURRENCY, "its prices came in another currency than the wallet's");
             logbus::info(
                 "market",
                 format!(
-                    "{why}: price checks wait {} s, then go on one every {:.1} s ({done} of {total} done)",
-                    pause.as_secs(),
-                    slower.as_secs_f64()
+                    "Steam's market search gives its prices in {}, not in this account's wallet currency ({}), so they can't be used: prices are checked one item at a time",
+                    market::currency_code(other),
+                    market::currency_code(wallet.currency)
                 ),
             );
-            let short = match cause {
-                pricing::Cause::TooMany => "Steam asked to slow down",
-                pricing::Cause::Trouble => "Steam is having trouble",
-            };
-            progress("prices", done, total, format!("{short}: waiting {} s", pause.as_secs()));
+        } else if no_good.load(Ordering::SeqCst) {
+            end = pricing::RunEnd::Done;
+            app.turn_searches_off(SEARCHES_OFF_NO_GOOD, "it didn't answer as a search does");
+            logbus::warn(
+                "market",
+                format!("Steam's market search didn't answer as expected ({why_no_good}): prices are checked one item at a time"),
+            );
+        } else {
+            searched = Some((priced.len(), wanted.len()));
+            if let pricing::RunEnd::GaveUp { cause, .. } = end {
+                end = pricing::RunEnd::Done;
+                app.turn_searches_off(SEARCHES_OFF_NO_GOOD, "Steam kept refusing it");
+                let kept = match cause {
+                    pricing::Cause::TooMany => "Steam kept asking IdleKit to slow down",
+                    pricing::Cause::Trouble => "Steam kept having trouble answering",
+                };
+                logbus::info(
+                    "market",
+                    format!(
+                        "{kept} at the market's search, after {} of {} item(s) were priced by it: the rest are checked one item at a time",
+                        priced.len(),
+                        wanted.len()
+                    ),
+                );
+            } else if end == pricing::RunEnd::Done {
+                let rest = unpriced.len();
+                logbus::info(
+                    "market",
+                    format!(
+                        "Quick prices: {} of {} item(s) priced from {requests} request(s) to Steam's market search in {}{}; buy orders are read next, one item at a time",
+                        priced.len(),
+                        wanted.len(),
+                        took_words(started.elapsed().as_secs_f64()),
+                        if rest > 0 { format!("; {rest} not in its answers, priced one by one") } else { String::new() }
+                    ),
+                );
+            }
         }
-    })
-    .await;
+    }
+    if end == pricing::RunEnd::Done && stop() {
+        // Stopped between two rounds.
+        end = pricing::RunEnd::Stopped;
+    }
+    if end == pricing::RunEnd::Done {
+        // The order books: the ticked items before any other, then those
+        // still without a price, then the rest, each in the order given.
+        let ticked: HashSet<&str> = first.iter().flatten().map(String::as_str).collect();
+        let mut names: Vec<String> = to_read[read_first..].to_vec();
+        names.sort_by_key(|name| match (ticked.contains(name.as_str()), unpriced.contains(name.as_str())) {
+            (true, _) => 0,
+            (false, true) => 1,
+            (false, false) => 2,
+        });
+        // Every item has a price once the last one without is answered.
+        let without_price = names.iter().filter(|name| unpriced.contains(name.as_str())).count();
+        reading.prices_until = reading.done + names.iter().rposition(|name| unpriced.contains(name.as_str())).map_or(0, |at| at + 1);
+        if without_price == 0 {
+            reading.doing = READING_OFFERS;
+        }
+        logbus::debug(
+            "market",
+            format!(
+                "Reading the order books of {} item(s), one every {:.1} s ({} ticked ones first, {without_price} without a price yet)",
+                names.len(),
+                reading.every.as_secs_f64(),
+                names.iter().filter(|name| ticked.contains(name.as_str())).count()
+            ),
+        );
+        progress("prices", reading.done, total, time_left(reading.doing, names.len(), reading.every));
+        end = pricing::run(names, pace(reading.every), &mut pacer, &stop, &ask, |news| reading.hear(news)).await;
+    }
     // Saved before letting go, so the next run doesn't write the file at the same time.
     app.save_prices();
     drop(pacer);
+    let Reading { wallet, prices, doing, done, unpriced: without_price, unread, failed_from_start, first_problem, not_on_market, paused_for, .. } = reading;
     let took_secs = started.elapsed().as_secs_f64();
-    let took = if took_secs < 90.0 { format!("{took_secs:.0} s") } else { format!("{} min", (took_secs / 60.0).ceil()) };
+    let took = took_words(took_secs);
     if !not_on_market.is_empty() {
         let shown: Vec<&str> = not_on_market.iter().take(10).map(String::as_str).collect();
         let more = not_on_market.len().saturating_sub(shown.len());
@@ -1304,18 +1745,25 @@ pub async fn market_prices(
             ),
         );
     }
+    let only_offers = doing == READING_OFFERS;
     match end {
         pricing::RunEnd::Done => {
             progress("prices", total, total, "Done");
             let pauses = if paused_for.is_zero() { String::new() } else { format!(", {} s of it in pauses", paused_for.as_secs()) };
             let each = if done > 0 { format!(", {:.1} s per item", took_secs / done as f64) } else { String::new() };
-            logbus::info(
-                "market",
-                format!(
-                    "Checked {total} price(s) in {took}{each}{pauses}{}",
-                    if unpriced > 0 { format!("; {unpriced} item(s) got no price") } else { String::new() }
-                ),
-            );
+            let missed = [
+                (without_price > 0).then(|| format!("{without_price} item(s) got no price")),
+                (unread > 0).then(|| format!("the buy orders of {unread} item(s) couldn't be read")),
+            ];
+            let missed: Vec<String> = missed.into_iter().flatten().collect();
+            let missed = if missed.is_empty() { String::new() } else { format!("; {}", missed.join(", ")) };
+            // With the prices from the search, or from before, the order books were for the buy orders.
+            let what = if searched.is_some() || to_price.is_empty() {
+                format!("Read the buy orders of {total} item(s)")
+            } else {
+                format!("Checked {total} price(s)")
+            };
+            logbus::info("market", format!("{what} in {took}{each}{pauses}{missed}"));
         }
         pricing::RunEnd::Stopped if broken.load(Ordering::SeqCst) => {
             progress("prices", total, total, "Stopped");
@@ -1326,11 +1774,17 @@ pub async fn market_prices(
             return Err(why);
         }
         pricing::RunEnd::Stopped => {
+            let so_far = match searched {
+                Some((priced, wanted)) => {
+                    format!("{priced} of {wanted} item(s) priced by the market's search, {done} of {total} order book(s) read")
+                }
+                None => format!("{done} of {total} checked"),
+            };
             if cancelled() {
                 progress("prices", total, total, "Cancelled");
-                logbus::info("market", format!("Stopped checking prices: {done} of {total} checked"));
+                logbus::info("market", format!("Stopped checking prices: {so_far}"));
             } else {
-                logbus::debug("market", format!("A newer price check took over after {done} of {total}"));
+                logbus::debug("market", format!("A newer price check took over ({so_far})"));
             }
         }
         pricing::RunEnd::GaveUp { left, cause } => {
@@ -1339,7 +1793,12 @@ pub async fn market_prices(
                 pricing::Cause::TooMany => "Steam kept asking IdleKit to slow down",
                 pricing::Cause::Trouble => "Steam kept having trouble answering",
             };
-            let why = format!("{kept}, so {left} price(s) weren't checked after {took}. Try Refresh prices in a few minutes");
+            let missing = if only_offers {
+                format!("the buy orders of {left} item(s) weren't read")
+            } else {
+                format!("{left} price(s) weren't checked")
+            };
+            let why = format!("{kept}, so {missing} after {took}. Try Refresh prices in a few minutes");
             logbus::warn("market", &why);
             return Err(why);
         }

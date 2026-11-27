@@ -6,7 +6,7 @@ import { HiddenNotice } from "../components/HiddenNotice";
 import { money, sellerReceives, suggestPrice, timeOfDay } from "../lib/format";
 import { useAppIds, useHiding } from "../lib/hidden";
 import { useKept, useView } from "../lib/kept";
-import { useMarket, useMarketStore } from "../lib/market";
+import { useMarket, useMarketStore, waiting } from "../lib/market";
 import { useActiveAccount, useApp, useEnsureGames } from "../lib/store";
 import type { Account, InvItem, MarketSortColumn, ViewSettings } from "../lib/types";
 
@@ -290,7 +290,8 @@ function Inventory({ account }: { account: Account }) {
   }, [sorted]);
 
   // What to price, in order: the items shown, as the table has them, then
-  // the rest (not those of games that are hidden).
+  // the rest (not those of games that are hidden). The ticked ones go
+  // along by name: their buy orders are read before any other's.
   const priceOrder = useMemo(() => {
     const first = sorted.map((i) => i.marketHashName);
     const shownNow = new Set(first);
@@ -301,10 +302,12 @@ function Inventory({ account }: { account: Account }) {
   }, [sorted, items, hiding]);
   const priceOrderNow = useRef(priceOrder);
   const shownNow = useRef<string[]>([]);
+  const tickedNow = useRef<string[]>([]);
   useEffect(() => {
     priceOrderNow.current = priceOrder;
     shownNow.current = sorted.map((i) => i.marketHashName);
-  }, [priceOrder, sorted]);
+    tickedNow.current = priceOrder.filter((name) => selected.has(name));
+  }, [priceOrder, sorted, selected]);
 
   // Prices check by themselves once the inventory is here, and again once
   // they are an hour old while the page stays open (not while the window is
@@ -314,7 +317,7 @@ function Inventory({ account }: { account: Account }) {
     const check = () => {
       if (document.visibilityState === "hidden") return;
       const underWay = useApp.getState().marketProgress?.task === "prices";
-      useMarketStore.getState().priceByItself(account.steamId, items, priceOrderNow.current, underWay);
+      useMarketStore.getState().priceByItself(account.steamId, items, priceOrderNow.current, underWay, tickedNow.current);
     };
     check();
     const id = setInterval(check, 60_000);
@@ -334,12 +337,33 @@ function Inventory({ account }: { account: Account }) {
     const id = setTimeout(() => {
       viewChecked.current = view;
       const kept = useMarketStore.getState().byAccount[account.steamId]?.prices ?? {};
-      if (shownNow.current.some((name) => !kept[name])) {
-        void useMarketStore.getState().checkPrices(account.steamId, priceOrderNow.current);
+      if (shownNow.current.some((name) => waiting(kept[name]))) {
+        void useMarketStore.getState().checkPrices(account.steamId, priceOrderNow.current, [], tickedNow.current);
       }
     }, 700);
     return () => clearTimeout(id);
   }, [view, checking, account.steamId]);
+
+  // And so does ticking items that still wait for their price or their buy
+  // orders: they go first. Once for each newly ticked one, not again as
+  // their answers come in or when a tick is taken away.
+  const tickedWaiting = useMemo(
+    () => [...selected].filter((name) => waiting(prices[name])).sort().join("\n"),
+    [selected, prices],
+  );
+  const putFirst = useRef(new Set<string>());
+  useEffect(() => {
+    const names = tickedWaiting ? tickedWaiting.split("\n") : [];
+    if (!checking || names.every((name) => putFirst.current.has(name))) {
+      putFirst.current = new Set(names);
+      return;
+    }
+    const id = setTimeout(() => {
+      putFirst.current = new Set(names);
+      void useMarketStore.getState().checkPrices(account.steamId, priceOrderNow.current, [], tickedNow.current);
+    }, 900);
+    return () => clearTimeout(id);
+  }, [tickedWaiting, checking, account.steamId]);
 
   const unmarketable = (items ?? []).filter((i) => !i.marketable).length;
   const qtyOf = (i: InvItem) => qty[i.marketHashName] ?? i.count;
@@ -436,7 +460,7 @@ function Inventory({ account }: { account: Account }) {
                   ? [...inTable.filter((name) => selected.has(name)), ...[...selected].filter((name) => !inTable.includes(name))]
                   : inTable;
               const first = new Set(again);
-              void useMarketStore.getState().checkPrices(account.steamId, [...again, ...priceOrder.filter((name) => !first.has(name))], again);
+              void useMarketStore.getState().checkPrices(account.steamId, [...again, ...priceOrder.filter((name) => !first.has(name))], again, tickedNow.current);
             }}
           >
             {selected.size > 0 ? `Refresh prices for ${selected.size} selected` : "Refresh prices"}
@@ -490,6 +514,16 @@ function Inventory({ account }: { account: Account }) {
                   : checking
                     ? "Its price is on the way"
                     : undefined;
+                // The price came from the market's search, which tells no
+                // buy orders: those take a request of the item's own.
+                const noOffers = !!p && waiting(p);
+                const aboutOffers = noOffers
+                  ? checking
+                    ? "Its buy orders are on the way"
+                    : "Its buy orders haven't been read yet"
+                  : p && !p.problem && p.offersAt < p.checkedAt
+                    ? `Buy orders as read at ${timeOfDay(p.offersAt)}`
+                    : about;
                 return (
                   <tr key={i.marketHashName} className={cx("border-t border-line first:border-t-0", sel && "bg-raised/50")}>
                     <td className="px-4 py-2">
@@ -534,8 +568,8 @@ function Inventory({ account }: { account: Account }) {
                     <td className="num px-3 py-2 text-right text-muted" title={about}>
                       {p ? money(p.lowestSell, currency) : none}
                     </td>
-                    <td className="num px-3 py-2 text-right text-muted" title={about}>
-                      {p ? money(p.highestBuy, currency) : none}
+                    <td className="num px-3 py-2 text-right text-muted" title={aboutOffers}>
+                      {noOffers ? (checking ? "…" : "—") : p ? money(p.highestBuy, currency) : none}
                     </td>
                     <td className="px-3 py-2 text-right">
                       <input

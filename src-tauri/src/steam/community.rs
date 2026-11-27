@@ -54,6 +54,10 @@ fn random_session_id() -> String {
 /// dropped, as happens on Wi-Fi) is tried again after these pauses, in seconds.
 const NETWORK_RETRIES: [u64; 2] = [3, 8];
 
+/// How Steam's market pages mark the queries they send (the order book, the
+/// search): IdleKit's go out the same way.
+const QUERY_HEADER: (&str, &str) = ("x-valve-request-type", "queryAction");
+
 /// Steam answered, but not to this account: the page was shown to a visitor
 /// who isn't signed in, or to someone else. The web session has ended.
 #[derive(Debug)]
@@ -174,24 +178,33 @@ impl WebSession {
     /// (timed out, reset), and with growing pauses when Steam answers 429 or
     /// a 5xx.
     pub async fn get_text(&self, url: &str) -> Result<String> {
-        self.fetch_text(url, true).await
+        self.fetch_text(url, true, false).await
     }
 
     /// GET a page as text, as [`get_text`](Self::get_text) does, except that
     /// "too many requests" or a 5xx comes straight back, as [`SteamBusy`]:
     /// for callers that pace many requests and wait in their own way.
     pub async fn get_text_or_busy(&self, url: &str) -> Result<String> {
-        self.fetch_text(url, false).await
+        self.fetch_text(url, false, false).await
     }
 
-    async fn fetch_text(&self, url: &str, wait_when_busy: bool) -> Result<String> {
+    /// GET one of the market's queries (`…?q=<which>&qp=<about what>`), marked
+    /// the way Steam's own market pages mark theirs. "Too many requests" or
+    /// a 5xx comes straight back, as [`SteamBusy`].
+    pub async fn get_query_or_busy(&self, url: &str) -> Result<String> {
+        self.fetch_text(url, false, true).await
+    }
+
+    async fn fetch_text(&self, url: &str, wait_when_busy: bool, query: bool) -> Result<String> {
         // The address as it may be written down: no query, no profile name.
         let place = reqwest::Url::parse(url).map(|u| crate::net::place(&u)).unwrap_or_else(|_| "a Steam page".into());
         let mut delay = 4u64;
         let mut busy = 0;
         let mut dropped = 0;
         loop {
-            let resp = match self.client.get(url).logged().await {
+            let request = self.client.get(url);
+            let request = if query { request.header(QUERY_HEADER.0, QUERY_HEADER.1) } else { request };
+            let resp = match request.logged().await {
                 Ok(resp) => resp,
                 Err(e) if dropped < NETWORK_RETRIES.len() && worth_another_try(&e) => {
                     let wait = NETWORK_RETRIES[dropped];

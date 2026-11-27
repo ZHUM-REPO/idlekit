@@ -95,7 +95,8 @@ export const ACTIONS: Record<string, Action> = {
   market_inventory: { label: "Load the inventory", detail: account },
   market_prices: {
     label: "Get market prices",
-    detail: (a) => `${count(a.hashNames)} item(s)${count(a.recheck) ? `, ${count(a.recheck)} checked again` : ""}`,
+    detail: (a) =>
+      `${count(a.hashNames)} item(s)${count(a.recheck) ? `, ${count(a.recheck)} checked again` : ""}${count(a.first) ? `, ${count(a.first)} ticked first` : ""}`,
   },
   market_sell: {
     label: "List items on the market",

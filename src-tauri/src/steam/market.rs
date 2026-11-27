@@ -5,7 +5,7 @@ use super::community::WebSession;
 use anyhow::{anyhow, bail, Context, Result};
 use scraper::{Html, Selector};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::time::Duration;
 
@@ -40,6 +40,9 @@ pub struct PriceInfo {
     pub you_receive: Option<u32>,
     /// When Steam was asked, in milliseconds since 1970; 0 when it wasn't.
     pub checked_at: i64,
+    /// When the buy orders (`highest_buy`) were read, which takes the item's
+    /// order book: 0 while only the market's search has answered.
+    pub offers_at: i64,
     /// Why there is no price, when Steam couldn't say.
     pub problem: Option<String>,
 }
@@ -440,15 +443,17 @@ pub fn parse_order_book(text: &str) -> Result<Option<Book>> {
 pub async fn order_book_by_name(ws: &WebSession, hash_name: &str) -> Result<Option<Book>> {
     let query = serde_json::to_string(&(STEAM_APP, hash_name))?;
     let url = format!("https://steamcommunity.com/market/orderbook?q=Load&qp={}", urlencoding::encode(&query));
-    let text = ws.get_text_or_busy(&url).await.map_err(|e| {
-        // A refusal says so without the address (long, and the same for every item).
-        if super::community::steam_busy(&e).is_some() || super::community::connection_failed(&e) {
-            e
-        } else {
-            anyhow!("Steam's order book lookup answered {}", e.root_cause())
-        }
-    })?;
+    let text = ws.get_query_or_busy(&url).await.map_err(|e| plain_refusal(e, "order book lookup"))?;
     parse_order_book(&text)
+}
+
+/// A refusal says so without the address (long, and the same for every item).
+fn plain_refusal(e: anyhow::Error, what: &str) -> anyhow::Error {
+    if super::community::steam_busy(&e).is_some() || super::community::connection_failed(&e) {
+        e
+    } else {
+        anyhow!("Steam's {what} answered {}", e.root_cause())
+    }
 }
 
 /// An item's order book the way Steam's market answered before November
@@ -478,6 +483,176 @@ pub async fn order_book_by_id(ws: &WebSession, item_nameid: u64, currency: u32) 
         highest_buy: cents(v.get("highest_buy_order")),
         sell_listings,
     })
+}
+
+/// A currency as the log names it: its three letters, for the ones Steam's
+/// wallets come in.
+pub fn currency_code(currency: u32) -> String {
+    const CODES: [&str; 42] = [
+        "", "USD", "GBP", "EUR", "CHF", "RUB", "PLN", "BRL", "JPY", "NOK", "IDR", "MYR", "PHP", "SGD", "THB", "VND", "KRW",
+        "TRY", "UAH", "MXN", "CAD", "AUD", "NZD", "CNY", "INR", "CLP", "PEN", "COP", "ZAR", "HKD", "TWD", "SAR", "AED", "",
+        "ARS", "ILS", "", "KZT", "KWD", "QAR", "CRC", "UYU",
+    ];
+    match CODES.get(currency as usize) {
+        Some(code) if !code.is_empty() => code.to_string(),
+        _ => format!("currency {currency}"),
+    }
+}
+
+// ---------------------------------------------------------- market search --
+
+/// The most results Steam's market search gives in one answer.
+pub const SEARCH_PAGE: usize = 100;
+
+/// Which of a game's Steam items a search asks for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum SearchKind {
+    /// Trading cards, not the foil ones.
+    Cards,
+    Foils,
+    /// Backgrounds, emoticons and booster packs.
+    Others,
+}
+
+impl SearchKind {
+    /// By an inventory item's class ([`InvItem::class`]); `None` for what
+    /// the search isn't asked about (gems, and what has no class).
+    pub fn of_class(class: &str) -> Option<SearchKind> {
+        match class {
+            "card" => Some(SearchKind::Cards),
+            "foil" => Some(SearchKind::Foils),
+            "background" | "emoticon" | "booster" => Some(SearchKind::Others),
+            _ => None,
+        }
+    }
+
+    pub fn words(self) -> &'static str {
+        match self {
+            SearchKind::Cards => "cards",
+            SearchKind::Foils => "foil cards",
+            SearchKind::Others => "backgrounds, emoticons and boosters",
+        }
+    }
+}
+
+/// One search: the items of a kind that some games have on the market.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SearchFor {
+    pub kind: SearchKind,
+    /// The games' app ids.
+    pub games: Vec<u32>,
+}
+
+/// What a search says of one item: its cheapest listing (what a buyer pays,
+/// in `currency`'s minor units) and how many listings there are. It says
+/// nothing of buy orders.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Found {
+    pub hash_name: String,
+    pub currency: u32,
+    /// `None` when the search gave no price that can be gone by.
+    pub lowest_sell: Option<u32>,
+    pub sell_listings: u32,
+}
+
+/// One answer of a search.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct SearchPage {
+    /// How many items the whole search has.
+    pub total: usize,
+    /// How many of them this answer held.
+    pub results: usize,
+    pub found: Vec<Found>,
+}
+
+/// The address of a search's answer from `start` on, in name order, so
+/// that one answer follows the other without gaps. Steam's own search page
+/// asks this way; it names the wallet's currency too.
+fn search_url(what: &SearchFor, currency: u32, start: usize) -> String {
+    let games: Vec<String> = what.games.iter().map(|g| format!("app_{g}")).collect();
+    let filters = match what.kind {
+        SearchKind::Cards => json!({ "Game": games, "item_class": ["item_class_2"], "cardborder": ["cardborder_0"] }),
+        SearchKind::Foils => json!({ "Game": games, "item_class": ["item_class_2"], "cardborder": ["cardborder_1"] }),
+        SearchKind::Others => json!({ "Game": games, "item_class": ["item_class_3", "item_class_4", "item_class_5"] }),
+    };
+    let query = json!([{
+        "appid": STEAM_APP,
+        "filters": filters,
+        "accessoryFilters": {},
+        "price": { "eCurrency": currency },
+        "start": start,
+        "count": SEARCH_PAGE,
+        // By name, first to last.
+        "sort": 1,
+        "direction": 1,
+    }]);
+    format!("https://steamcommunity.com/market/actions?q=Search&qp={}", urlencoding::encode(&query.to_string()))
+}
+
+/// A price as Steam writes it out ("$0.05", "0,05€", "0.19 SR", "¥ 6",
+/// "1.234,50 TL", "5,--€"), in minor units. The last "." or "," with one or
+/// two digits after it is the decimal mark; any other separates thousands.
+pub fn money_cents(text: &str) -> Option<u32> {
+    let first = text.find(|c: char| c.is_ascii_digit())?;
+    let last = text.rfind(|c: char| c.is_ascii_digit())?;
+    let number = &text[first..=last];
+    let mark = number.rfind(['.', ',']);
+    let (whole, part) = match mark {
+        Some(at) if (1..=2).contains(&(number.len() - at - 1)) && number[at + 1..].bytes().all(|b| b.is_ascii_digit()) => {
+            (&number[..at], &number[at + 1..])
+        }
+        _ => (number, ""),
+    };
+    let digits = |s: &str| s.chars().filter(char::is_ascii_digit).collect::<String>();
+    let units: u64 = digits(whole).parse().ok()?;
+    let hundredths: u64 = match part.len() {
+        0 => 0,
+        1 => part.parse::<u64>().ok()? * 10,
+        _ => part.parse().ok()?,
+    };
+    u32::try_from(units.checked_mul(100)?.checked_add(hundredths)?).ok()
+}
+
+/// Reads an answer of the market's search. Each result has the item's
+/// market name, its cheapest listing written out as a price, the fees that
+/// are part of that price, and the currency all of it is in. A price is only
+/// gone by when its fees fit it: more than nothing, less than the price and
+/// at least a twenty-fifth of it. That holds in every currency, so a price
+/// read a hundred times too high or too low doesn't pass.
+pub fn parse_search(text: &str) -> Result<SearchPage> {
+    let v: Value = serde_json::from_str(text).map_err(|_| anyhow!("Steam answered with a page instead of search results"))?;
+    let data = v.get("data").unwrap_or(&v);
+    let results = data
+        .get("results")
+        .and_then(Value::as_array)
+        .ok_or_else(|| anyhow!("Steam's search answer isn't in the expected form"))?;
+    let total = data.get("total_count").and_then(Value::as_u64).map_or(results.len(), |n| n as usize);
+    let found = results
+        .iter()
+        .filter_map(|r| {
+            let hash_name = r.get("strHash")?.as_str()?.to_string();
+            let currency = r.get("eCurrency")?.as_u64().filter(|c| (1..=1000).contains(c))? as u32;
+            let fee = |name: &str| r.get(name).and_then(Value::as_u64).unwrap_or(0);
+            let fees = fee("unSteamFee") + fee("unPublisherFee");
+            let lowest_sell = r
+                .get("strMinSellSubtotal")
+                .and_then(Value::as_str)
+                .and_then(money_cents)
+                .filter(|&price| fees > 0 && fees < price as u64 && fees * 25 >= price as u64);
+            let sell_listings = r.get("cSellOrders").and_then(Value::as_u64).map_or(0, |n| n.min(u32::MAX as u64) as u32);
+            Some(Found { hash_name, currency, lowest_sell, sell_listings })
+        })
+        .collect();
+    Ok(SearchPage { total, results: results.len(), found })
+}
+
+/// One answer of the market's search: up to [`SEARCH_PAGE`] items of some
+/// games, from `start` on, each with its cheapest listing. One request
+/// where the order books of as many items take one each. "Too many
+/// requests" comes back as a [`SteamBusy`](super::community::SteamBusy) error.
+pub async fn search(ws: &WebSession, what: &SearchFor, currency: u32, start: usize) -> Result<SearchPage> {
+    let text = ws.get_query_or_busy(&search_url(what, currency, start)).await.map_err(|e| plain_refusal(e, "market search"))?;
+    parse_search(&text)
 }
 
 // -------------------------------------------------------- selling/listings --
@@ -763,5 +938,123 @@ mod tests {
 
         // No page data, no wallet.
         assert_eq!(Wallet::read("<html><body>Steam is down</body></html>"), None);
+    }
+
+    #[test]
+    fn market_search_as_steam_answers_it() {
+        // Steam's answer for Team Fortress 2's cards (US dollars: nobody was
+        // signed in), November 2026, each description cut down to a few fields.
+        let page = parse_search(include_str!("fixtures/market_search_cards.json")).unwrap();
+        assert_eq!((page.total, page.results, page.found.len()), (9, 9, 9));
+        assert_eq!(
+            page.found[0],
+            Found { hash_name: "440-DEMOMAN (Trading Card)".into(), currency: 1, lowest_sell: Some(4), sell_listings: 5495 }
+        );
+        assert_eq!(page.found[4].hash_name, "440-PYRO (Trading Card)");
+        assert_eq!((page.found[4].lowest_sell, page.found[4].sell_listings), (Some(5), 4896));
+
+        let one = |price: &str, steam: u32, publisher: u32| {
+            let text = format!(
+                r#"{{"data":{{"start":0,"total_count":1,"results":[{{"strHash":"1-A","eCurrency":31,"cSellOrders":3,"strMinSellSubtotal":"{price}","unSteamFee":{steam},"unPublisherFee":{publisher}}}]}}}}"#
+            );
+            parse_search(&text).unwrap().found[0].clone()
+        };
+        // Riyals: 0.20 with 0.04 + 0.04 of fees in it.
+        assert_eq!(one("0.20 SR", 4, 4), Found { hash_name: "1-A".into(), currency: 31, lowest_sell: Some(20), sell_listings: 3 });
+        // Steam lists some items at no price at all: that is no price.
+        assert_eq!(one("$0.00", 0, 0).lowest_sell, None);
+        // A price whose fees don't fit it was read wrongly, and isn't gone by:
+        // a hundred times too high, too low, or with no fees to go by.
+        assert_eq!(one("5.000 X", 1, 1).lowest_sell, None);
+        assert_eq!(one("0,05€", 100, 100).lowest_sell, None);
+        assert_eq!(one("$0.05", 0, 0).lowest_sell, None);
+        // The lowest price there is, and a high one.
+        assert_eq!(one("$0.03", 1, 1).lowest_sell, Some(3));
+        assert_eq!(one("$100.00", 434, 869).lowest_sell, Some(10_000));
+
+        // Nothing found is an answer too; what can't be read is an error.
+        let none = parse_search(r#"{"data":{"start":0,"total_count":0,"grouping":1,"facets":[],"results":[]}}"#).unwrap();
+        assert_eq!(none, SearchPage::default());
+        assert!(parse_search("<html>Sorry!</html>").is_err());
+        assert!(parse_search(r#"{"data":{"success":false}}"#).is_err());
+        // A result without its name or currency is left out, and still counted.
+        let odd = parse_search(r#"{"data":{"total_count":2,"results":[{"strHash":"1-A"},{"eCurrency":1}]}}"#).unwrap();
+        assert_eq!((odd.total, odd.results, odd.found.len()), (2, 2, 0));
+    }
+
+    #[test]
+    fn prices_as_steam_writes_them_out() {
+        for (text, cents) in [
+            ("$0.05", 5),
+            ("$1,234.56", 123_456),
+            ("0,05€", 5),
+            ("5,--€", 500),
+            ("0.19 SR", 19),
+            ("R$ 0,35", 35),
+            ("S/.0.19", 19),
+            ("1.234,50 TL", 123_450),
+            ("1 234,56 zł", 123_456),
+            ("12,5 pуб.", 1250),
+            ("¥ 6", 600),
+            ("₩ 1,250", 125_000),
+            ("CLP$ 1.234", 123_400),
+            ("Rp 2 500", 250_000),
+            ("₹ 1,23,456", 12_345_600),
+            ("$0.00", 0),
+        ] {
+            assert_eq!(money_cents(text), Some(cents), "{text}");
+        }
+        assert_eq!(money_cents(""), None);
+        assert_eq!(money_cents("free"), None);
+        // Too much to be a price.
+        assert_eq!(money_cents("99999999999999999999"), None);
+    }
+
+    #[test]
+    fn a_search_asks_for_one_kind_of_item_of_some_games() {
+        let asked = |kind, start| {
+            let url = search_url(&SearchFor { kind, games: vec![440, 730] }, 31, start);
+            let (at, query) = url.split_once("&qp=").unwrap();
+            assert_eq!(at, "https://steamcommunity.com/market/actions?q=Search");
+            serde_json::from_str::<Value>(&urlencoding::decode(query).unwrap()).unwrap()
+        };
+        let cards = asked(SearchKind::Cards, 200);
+        assert_eq!(
+            cards,
+            json!([{
+                "appid": 753,
+                "filters": { "Game": ["app_440", "app_730"], "item_class": ["item_class_2"], "cardborder": ["cardborder_0"] },
+                "accessoryFilters": {},
+                "price": { "eCurrency": 31 },
+                "start": 200,
+                "count": 100,
+                "sort": 1,
+                "direction": 1
+            }])
+        );
+        assert_eq!(asked(SearchKind::Foils, 0)[0]["filters"]["cardborder"], json!(["cardborder_1"]));
+        let others = asked(SearchKind::Others, 0);
+        assert_eq!(others[0]["filters"]["item_class"], json!(["item_class_3", "item_class_4", "item_class_5"]));
+        assert_eq!(others[0]["filters"].get("cardborder"), None);
+
+        assert_eq!(SearchKind::of_class("card"), Some(SearchKind::Cards));
+        assert_eq!(SearchKind::of_class("foil"), Some(SearchKind::Foils));
+        for class in ["background", "emoticon", "booster"] {
+            assert_eq!(SearchKind::of_class(class), Some(SearchKind::Others));
+        }
+        assert_eq!(SearchKind::of_class("gems"), None);
+        assert_eq!(SearchKind::of_class("other"), None);
+    }
+
+    #[test]
+    fn currencies_by_their_letters() {
+        assert_eq!(currency_code(1), "USD");
+        assert_eq!(currency_code(3), "EUR");
+        assert_eq!(currency_code(31), "SAR");
+        assert_eq!(currency_code(41), "UYU");
+        // Steam has none with these numbers.
+        for unknown in [0, 33, 36, 42, 999] {
+            assert_eq!(currency_code(unknown), format!("currency {unknown}"));
+        }
     }
 }

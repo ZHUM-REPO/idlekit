@@ -381,7 +381,7 @@ export function createMock() {
   // Prices "checked" so far, and the price checks under way.
   const priceList = new Map<
     string,
-    { lowestSell: number | null; highestBuy: number | null; sellListings: number; checkedAt: number; problem: string | null }
+    { lowestSell: number | null; highestBuy: number | null; sellListings: number; checkedAt: number; offersAt: number; problem: string | null }
   >();
   let priceRuns = 0;
   let priceChecking = false;
@@ -703,14 +703,17 @@ export function createMock() {
       // A new copy each time, as from the app.
       return structuredClone(inventory);
     },
-    // As the app does it: what was checked in the last hour comes at once,
-    // the rest one by one (`?pace=<ms>`, 400 by default); a newer check, or
-    // listing, takes over; Cancel stops it. `?prices=slowdown` has "Steam"
-    // ask for a pause after the fifth item.
-    market_prices: async ({ steamId, hashNames, recheck }) => {
+    // As the app does it: what was checked in the last hour comes at once.
+    // The rest comes in two rounds: the market's search prices a dozen items
+    // or more a few dozen at a time (not with `?search=off`), then each
+    // item's buy orders come one by one (`?pace=<ms>`, 400 by default); a
+    // newer check, or listing, takes over; Cancel stops it.
+    // `?prices=slowdown` has "Steam" ask for a pause after the fifth item.
+    market_prices: async ({ steamId, hashNames, recheck, first }) => {
       const run = ++priceRuns;
       priceCancelled = false;
       const again = new Set<string>(recheck ?? []);
+      const ticked = new Set<string>(first ?? []);
       const names = [...new Set<string>(hashNames)];
       const info = (name: string): PriceInfo => {
         const seen = priceList.get(name)!;
@@ -724,43 +727,76 @@ export function createMock() {
           suggested,
           youReceive: suggested === null ? null : Math.max(1, Math.floor(suggested / 1.15)),
           checkedAt: seen.checkedAt,
+          offersAt: seen.offersAt,
           problem: seen.problem,
         };
       };
       const known = names.filter((n) => priceList.has(n));
       if (known.length) emit("market://prices", { steamId, wallet: US_DOLLAR_WALLET, items: known.map(info) });
-      const ask = names.filter((n) => again.has(n) || !priceList.has(n) || Date.now() - priceList.get(n)!.checkedAt > 3600_000);
+      const old = (at: number) => Date.now() - at > 3600_000;
+      const toPrice = names.filter((n) => again.has(n) || !priceList.has(n) || old(priceList.get(n)!.checkedAt));
+      const ask = names.filter((n) => again.has(n) || !priceList.has(n) || old(priceList.get(n)!.offersAt));
       const report = () => ({ currency: 1, wallet: US_DOLLAR_WALLET, items: names.filter((n) => priceList.has(n)).map(info) });
       if (!ask.length) return report();
       while (priceChecking) await delay(50);
       const stop = () => priceCancelled || run !== priceRuns;
       if (stop()) return report();
       priceChecking = true;
+      // What "Steam" says of an item: some have nobody selling, one has no market at all.
+      const book = (name: string) => {
+        const seed = [...name].reduce((n: number, c: string) => n + c.charCodeAt(0), 0);
+        const lowest = 6 + (seed % 40);
+        return {
+          lowestSell: seed % 7 === 0 ? null : lowest,
+          highestBuy: seed % 7 === 0 && seed % 2 === 0 ? null : lowest - 3,
+          sellListings: seed % 7 === 0 ? 0 : 120 + (seed % 900),
+          problem: name.endsWith("Card 7") ? "Steam has no market for this item" : null,
+        };
+      };
       try {
         const pace = Number(params.get("pace")) || 400;
-        for (let i = 0; i < ask.length; i++) {
+        // The items still without a price of this hour.
+        const unpriced = new Set(toPrice);
+        if (toPrice.length >= 12 && params.get("search") !== "off") {
+          // The search has what is for sale, forty items an answer here.
+          const found = toPrice.filter((n) => book(n).lowestSell !== null && book(n).problem === null);
+          for (let i = 0; i < found.length; i += 40) {
+            if (stop()) break;
+            emit("market://progress", { task: "prices", done: i, total: toPrice.length, message: "Checking prices, less than a minute left" });
+            await delay(pace);
+            if (stop()) break;
+            const part = found.slice(i, i + 40);
+            for (const name of part) {
+              const b = book(name);
+              priceList.set(name, { lowestSell: b.lowestSell, highestBuy: null, sellListings: b.sellListings, checkedAt: Date.now(), offersAt: 0, problem: null });
+              unpriced.delete(name);
+            }
+            emit("market://prices", { steamId, wallet: US_DOLLAR_WALLET, items: part.map(info) });
+          }
+        }
+        // The ticked ones first, then those still without a price; once
+        // the last of those is answered, it is buy orders.
+        const order = [
+          ...ask.filter((n) => ticked.has(n)),
+          ...ask.filter((n) => !ticked.has(n) && unpriced.has(n)),
+          ...ask.filter((n) => !ticked.has(n) && !unpriced.has(n)),
+        ];
+        const pricesUntil = order.reduce((until, n, k) => (unpriced.has(n) ? k + 1 : until), 0);
+        for (let i = 0; i < order.length; i++) {
           if (stop()) break;
-          emit("market://progress", { task: "prices", done: i, total: ask.length, message: `Checking prices, about ${Math.max(1, Math.ceil(((ask.length - i) * pace) / 60_000))} min left` });
+          const doing = i >= pricesUntil ? "Prices are in. Reading buy orders" : "Checking prices";
+          emit("market://progress", { task: "prices", done: i, total: order.length, message: `${doing}, about ${Math.max(1, Math.ceil(((order.length - i) * pace) / 60_000))} min left` });
           if (params.get("prices") === "slowdown" && i === 5) {
-            emit("market://progress", { task: "prices", done: i, total: ask.length, message: "Steam asked to slow down: waiting 3 s" });
+            emit("market://progress", { task: "prices", done: i, total: order.length, message: "Steam asked to slow down: waiting 3 s" });
             await delay(3000);
           }
           await delay(pace);
           if (stop()) break;
-          const name = ask[i];
-          const seed = [...name].reduce((n: number, c: string) => n + c.charCodeAt(0), 0);
-          const lowest = 6 + (seed % 40);
-          // Some have nobody selling, one has no market at all.
-          priceList.set(name, {
-            lowestSell: seed % 7 === 0 ? null : lowest,
-            highestBuy: seed % 7 === 0 && seed % 2 === 0 ? null : lowest - 3,
-            sellListings: seed % 7 === 0 ? 0 : 120 + (seed % 900),
-            checkedAt: Date.now(),
-            problem: name.endsWith("Card 7") ? "Steam has no market for this item" : null,
-          });
+          const name = order[i];
+          priceList.set(name, { ...book(name), checkedAt: Date.now(), offersAt: Date.now() });
           emit("market://prices", { steamId, wallet: US_DOLLAR_WALLET, items: [info(name)] });
         }
-        if (!stop() || priceCancelled) emit("market://progress", { task: "prices", done: ask.length, total: ask.length, message: "Done" });
+        if (!stop() || priceCancelled) emit("market://progress", { task: "prices", done: order.length, total: order.length, message: "Done" });
       } finally {
         priceChecking = false;
       }

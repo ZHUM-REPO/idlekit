@@ -6,6 +6,7 @@ use crate::net::Logged;
 use crate::steam::cm::Refusal;
 use crate::steam::community::{self, WebSession};
 use crate::steam::events::{self, EventList};
+use crate::steam::market::InvItem;
 use crate::steam::pricing::{self, PriceList};
 use crate::steam::webapi::{self, OwnedGame};
 use crate::steam::{art::ArtResolver, auth::AuthSessions, cm::CmManager, helper::HelperManager, jwt, local, pictures::Pictures};
@@ -134,6 +135,16 @@ pub struct Inner {
     pub price_pacer: tokio::sync::Mutex<pricing::Pacer>,
     /// The market's prices as last seen, read from disk when first needed.
     prices: Mutex<Option<PriceList>>,
+    /// What each inventory item is (a card, a foil card, an emoticon…), by
+    /// its market name, from the inventories loaded while IdleKit runs: the
+    /// market's search is asked by kind.
+    item_classes: Mutex<HashMap<String, String>>,
+    /// The market's search isn't asked for prices until then, and why: its
+    /// answers were in another currency than the wallet's, or not answers.
+    searches_off: Mutex<Option<(Instant, String)>>,
+    /// The items Steam said it has no market for, and when (milliseconds
+    /// since 1970): they aren't asked about again within the hour.
+    no_market: Mutex<HashMap<String, i64>>,
 }
 
 fn hide_account_names(cfg: &Config) {
@@ -188,6 +199,9 @@ impl App {
             price_runs: AtomicU64::new(0),
             price_pacer: tokio::sync::Mutex::new(pricing::Pacer::default()),
             prices: Mutex::new(None),
+            item_classes: Mutex::new(HashMap::new()),
+            searches_off: Mutex::new(None),
+            no_market: Mutex::new(HashMap::new()),
         }))
     }
 
@@ -208,6 +222,48 @@ impl App {
         if let Err(e) = PriceList::save(&bytes, &self.data_dir.join(pricing::FILE)) {
             logbus::warn("market", format!("Couldn't keep the prices on disk: {e:#}"));
         }
+    }
+
+    /// Keeps what each of an inventory's items is, for the market's search.
+    pub fn remember_classes(&self, items: &[InvItem]) {
+        let mut classes = self.item_classes.lock().unwrap();
+        for item in items {
+            classes.insert(item.market_hash_name.clone(), item.class.clone());
+        }
+    }
+
+    /// What each of these items is, where an inventory said.
+    pub fn classes_of(&self, names: &[String]) -> Vec<Option<String>> {
+        let classes = self.item_classes.lock().unwrap();
+        names.iter().map(|name| classes.get(name).cloned()).collect()
+    }
+
+    /// Why the market's search isn't asked for prices for now, when it isn't.
+    pub fn searches_off(&self) -> Option<String> {
+        let mut off = self.searches_off.lock().unwrap();
+        match &*off {
+            Some((until, why)) if Instant::now() < *until => Some(why.clone()),
+            _ => {
+                *off = None;
+                None
+            }
+        }
+    }
+
+    /// When Steam said it has no market for this item, if that was within the hour.
+    pub fn no_market_since(&self, name: &str, now: i64) -> Option<i64> {
+        let at = *self.no_market.lock().unwrap().get(name)?;
+        (now - at < pricing::FRESH_FOR_MS && at <= now).then_some(at)
+    }
+
+    /// Steam has no market for this item: it isn't asked about again for an hour.
+    pub fn note_no_market(&self, name: &str, at: i64) {
+        self.no_market.lock().unwrap().insert(name.to_string(), at);
+    }
+
+    /// The market's search gave nothing to go by: it isn't asked again for a while.
+    pub fn turn_searches_off(&self, how_long: Duration, why: impl Into<String>) {
+        *self.searches_off.lock().unwrap() = Some((Instant::now() + how_long, why.into()));
     }
 
     // ------------------------------------------------------------ config --

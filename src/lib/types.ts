@@ -293,6 +293,9 @@ export interface PriceInfo {
   youReceive: number | null;
   /** When Steam was asked (ms since 1970). */
   checkedAt: number;
+  /** When the buy orders (`highestBuy`) were read, which takes a request of
+   *  the item's own: 0 while only the market's search has answered. */
+  offersAt: number;
   /** Why there is no price, when Steam couldn't say. */
   problem: string | null;
 }
