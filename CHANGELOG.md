@@ -2,6 +2,10 @@
 
 The section for the version being released becomes the text of its release page.
 
+## 2.0
+
+- **Select all from the head of the inventory table.** On the Market's Inventory tab, the box at the top of the checkbox column ticks every item the table shows, under the filter and search in use, and unticks them again once they're all ticked. While only some are ticked it shows a dash. Items picked under another filter or search stay picked.
+
 ## 1.9
 
 - **Upcoming Events.** A new page in the sidebar lists Steam's upcoming sales and fests: the seasonal sales, Next Fest and the themed fests, grouped by month, with their days and times in your time zone and how long until each starts. The list comes from Valve's own schedule on the Steamworks site, is read again every day at midnight (or when you press Refresh), and is kept for when the site can't be reached.

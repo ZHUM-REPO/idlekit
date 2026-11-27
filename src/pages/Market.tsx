@@ -1,5 +1,5 @@
 import { RefreshCw, Search, Tag, Trash } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Button, Callout, Empty, Modal, PageHeader, Pill, Select, Tabs, TextInput, cx, inputClass } from "../components/ui";
 import { api } from "../lib/api";
 import { HiddenNotice } from "../components/HiddenNotice";
@@ -99,6 +99,50 @@ const STEAM_ITSELF = 753;
 function gameOf(item: InvItem): number {
   const id = Number(/^(\d+)-/.exec(item.marketHashName)?.[1] ?? 0);
   return id === STEAM_ITSELF ? 0 : id;
+}
+
+/**
+ * The box at the head of the checkbox column. It ticks every item the table
+ * shows, or, when they are all ticked, unticks them; items picked under
+ * another filter or search stay as they are. Half-ticked while only some of
+ * the items shown are.
+ */
+function SelectAllBox({
+  ids,
+  selected,
+  onChange,
+}: {
+  ids: string[];
+  selected: Set<string>;
+  onChange: (next: Set<string>) => void;
+}) {
+  const box = useRef<HTMLInputElement>(null);
+  const ticked = ids.filter((id) => selected.has(id)).length;
+  const all = ids.length > 0 && ticked === ids.length;
+  const some = ticked > 0 && !all;
+  // "Half-ticked" exists only as a property, not as an attribute React can set.
+  useEffect(() => {
+    if (box.current) box.current.indeterminate = some;
+  }, [some]);
+  return (
+    <input
+      ref={box}
+      type="checkbox"
+      checked={all}
+      disabled={ids.length === 0}
+      onChange={() => {
+        const next = new Set(selected);
+        for (const id of ids) {
+          if (all) next.delete(id);
+          else next.add(id);
+        }
+        onChange(next);
+      }}
+      aria-label={all ? "Unselect all items shown" : "Select all items shown"}
+      title={all ? "Unselect all" : "Select all"}
+      className="block size-4 accent-[var(--ink)]"
+    />
+  );
 }
 
 function Inventory({ account }: { account: Account }) {
@@ -240,7 +284,9 @@ function Inventory({ account }: { account: Account }) {
           <table className="w-full text-left text-[13px]">
             <thead className="border-b border-line text-[12px] text-faint">
               <tr>
-                <th className="w-10 px-4 py-2.5" />
+                <th className="w-10 px-4 py-2.5">
+                  <SelectAllBox ids={shown.map((i) => i.marketHashName)} selected={selected} onChange={setSelected} />
+                </th>
                 <th className="py-2.5 font-normal">Item</th>
                 <th className="px-3 py-2.5 text-right font-normal">Owned</th>
                 <th className="px-3 py-2.5 text-right font-normal">Sell</th>
