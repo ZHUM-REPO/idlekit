@@ -1,0 +1,91 @@
+{
+ "data": {
+  "start": 0,
+  "total_count": 60,
+  "grouping": 1,
+  "facets": [],
+  "results": [
+   {
+    "strHash": "AK-47 | Ice Coaled (Battle-Scarred)",
+    "cSellOrders": 5196,
+    "cBuyOrders": 0,
+    "unSteamFee": 19,
+    "unPublisherFee": 38,
+    "eCurrency": 1,
+    "strMinSellSubtotal": "$4.42",
+    "asset_description": {
+     "appid": 730,
+     "classid": "7993038640",
+     "icon_url": "i0CoZ81Ui0m-9KwlBY1L_18m",
+     "name": "AK-47 | Ice Coaled (Battle-Scarred)",
+     "name_color": "d32ce6",
+     "type": "Classified Rifle",
+     "market_name": "AK-47 | Ice Coaled (Battle-Scarred)",
+     "market_hash_name": "AK-47 | Ice Coaled (Battle-Scarred)",
+     "commodity": false,
+     "tradable": true,
+     "market_bucket_group_name": "AK-47 | Ice Coaled",
+     "market_bucket_group_id": "G180720F7083004"
+    },
+    "app": {
+     "appid": 730,
+     "strName": "Counter-Strike 2"
+    }
+   },
+   {
+    "strHash": "AK-47 | Crane Flight (Well-Worn)",
+    "cSellOrders": 2673,
+    "cBuyOrders": 0,
+    "unSteamFee": 37,
+    "unPublisherFee": 74,
+    "eCurrency": 1,
+    "strMinSellSubtotal": "$8.58",
+    "asset_description": {
+     "appid": 730,
+     "classid": "8246900320",
+     "icon_url": "i0CoZ81Ui0m-9KwlBY1L_18m",
+     "name": "AK-47 | Crane Flight (Well-Worn)",
+     "name_color": "d32ce6",
+     "type": "Classified Rifle",
+     "market_name": "AK-47 | Crane Flight (Well-Worn)",
+     "market_hash_name": "AK-47 | Crane Flight (Well-Worn)",
+     "commodity": false,
+     "tradable": true,
+     "market_bucket_group_name": "AK-47 | Crane Flight",
+     "market_bucket_group_id": "G180720910B3004"
+    },
+    "app": {
+     "appid": 730,
+     "strName": "Counter-Strike 2"
+    }
+   },
+   {
+    "strHash": "AK-47 | Slate (Well-Worn)",
+    "cSellOrders": 9648,
+    "cBuyOrders": 0,
+    "unSteamFee": 15,
+    "unPublisherFee": 30,
+    "eCurrency": 1,
+    "strMinSellSubtotal": "$3.50",
+    "asset_description": {
+     "appid": 730,
+     "classid": "7993036908",
+     "icon_url": "i0CoZ81Ui0m-9KwlBY1L_18m",
+     "name": "AK-47 | Slate (Well-Worn)",
+     "name_color": "8847ff",
+     "type": "Restricted Rifle",
+     "market_name": "AK-47 | Slate (Well-Worn)",
+     "market_hash_name": "AK-47 | Slate (Well-Worn)",
+     "commodity": false,
+     "tradable": true,
+     "market_bucket_group_name": "AK-47 | Slate",
+     "market_bucket_group_id": "G1807208B083004"
+    },
+    "app": {
+     "appid": 730,
+     "strName": "Counter-Strike 2"
+    }
+   }
+  ]
+ }
+}

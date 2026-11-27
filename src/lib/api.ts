@@ -8,7 +8,21 @@ import type {
   AchView,
   AuthEvent,
   Bootstrap,
+  AssetRef,
   CmStatus,
+  Cs2About,
+  Cs2Bought,
+  Cs2Buyer,
+  Cs2Depth,
+  Cs2Facet,
+  Cs2History,
+  Cs2Hits,
+  Cs2Item,
+  Cs2ItemPage,
+  Cs2Mine,
+  Cs2OrderStatus,
+  Cs2Query,
+  Cs2Suggestion,
   EventList,
   FarmGame,
   FarmStatus,
@@ -20,11 +34,14 @@ import type {
   LocalSteam,
   LogLine,
   MarketProgress,
+  PartnerItems,
   PriceInfo,
   PricesUpdate,
   SellOutcome,
   Settings,
   StartResult,
+  TradeOffers,
+  TradeOutcome,
   UnlockStatus,
   UpdateState,
   Wallet,
@@ -188,6 +205,41 @@ export const api = {
   listings: (steamId: string) => call<Listing[]>("market_listings", { steamId }),
   removeListings: (steamId: string, listingIds: string[]) => call<number>("market_remove", { steamId, listingIds }),
   marketCancel: () => call<void>("market_cancel"),
+
+  // Counter-Strike 2 on the Steam Community Market.
+  cs2Facets: (steamId: string) => call<Cs2Facet[]>("cs2_facets", { steamId }),
+  cs2Search: (steamId: string, query: Cs2Query) => call<Cs2Hits>("cs2_search", { steamId, query }),
+  cs2Suggest: (steamId: string, typed: string) => call<Cs2Suggestion[]>("cs2_suggest", { steamId, typed }),
+  /** An item's listings from `start` on, cheapest first; `filters` narrows a group to some of its kinds. */
+  cs2Item: (steamId: string, id: string, filters: Record<string, string[]>, start: number) =>
+    call<Cs2ItemPage>("cs2_item", { steamId, id, filters, start }),
+  cs2About: (steamId: string, hashName: string) => call<Cs2About | null>("cs2_about", { steamId, hashName }),
+  cs2Book: (steamId: string, hashName: string) => call<Cs2Depth | null>("cs2_book", { steamId, hashName }),
+  cs2History: (steamId: string, hashName: string) => call<Cs2History | null>("cs2_history", { steamId, hashName }),
+  cs2Buyer: (steamId: string) => call<Cs2Buyer>("cs2_buyer", { steamId }),
+  /** Buys one listing with the wallet, at exactly the price shown. `confirmation` completes a purchase Steam asked to confirm. */
+  cs2BuyListing: (
+    steamId: string,
+    listing: { listingId: string; hashName: string; price: number; fee: number; currency: number },
+    confirmation: string | null = null,
+  ) => call<Cs2Bought>("cs2_buy_listing", { steamId, listing, confirmation }),
+  cs2BuyOrder: (steamId: string, hashName: string, priceEach: number, quantity: number, confirmation: string | null = null) =>
+    call<Cs2Bought>("cs2_buy_order", { steamId, hashName, priceEach, quantity, confirmation }),
+  cs2OrderStatus: (steamId: string, orderId: string) => call<Cs2OrderStatus>("cs2_order_status", { steamId, orderId }),
+  cs2CancelOrder: (steamId: string, orderId: string) => call<void>("cs2_cancel_order", { steamId, orderId }),
+  cs2Mine: (steamId: string) => call<Cs2Mine>("cs2_mine", { steamId }),
+  cs2Inventory: (steamId: string) => call<Cs2Item[]>("cs2_inventory", { steamId }),
+  cs2Sell: (steamId: string, items: { assetId: string; hashName: string; buyerCents: number }[]) =>
+    call<SellOutcome[]>("cs2_sell", { steamId, items }),
+
+  // Trade offers.
+  tradeOffers: (steamId: string) => call<TradeOffers>("trade_offers", { steamId }),
+  /** The other player's tradable CS2 items; `link` is their trade link or, for a friend, their Steam ID. */
+  tradePartnerItems: (steamId: string, link: string) => call<PartnerItems>("trade_partner_items", { steamId, link }),
+  tradeSend: (steamId: string, link: string, give: AssetRef[], receive: AssetRef[], message: string) =>
+    call<TradeOutcome>("trade_send", { steamId, link, give, receive, message }),
+  tradeAccept: (steamId: string, offerId: string, partner: string) => call<TradeOutcome>("trade_accept", { steamId, offerId, partner }),
+  tradeWithdraw: (steamId: string, offerId: string, how: "decline" | "cancel") => call<void>("trade_withdraw", { steamId, offerId, how }),
 
   /** Returns whether IdleKit is registered to start at sign-in afterwards. */
   setAutostart: (enabled: boolean) => call<boolean>("set_autostart", { enabled }),

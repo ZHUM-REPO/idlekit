@@ -1,7 +1,7 @@
 //! Steam Community Market: inventory (app 753 / context 6 — cards, emoticons,
 //! backgrounds, boosters), live order-book pricing, listing and delisting.
 use crate::net::Logged;
-use super::community::WebSession;
+use super::community::{community_url, WebSession};
 use anyhow::{anyhow, bail, Context, Result};
 use scraper::{Html, Selector};
 use serde::{Deserialize, Serialize};
@@ -351,10 +351,7 @@ pub async fn inventory(ws: &WebSession) -> Result<Vec<InvItem>> {
     let mut groups = BTreeMap::new();
     let mut start: Option<String> = None;
     for _ in 0..20 {
-        let mut url = format!(
-            "https://steamcommunity.com/inventory/{}/753/6?l=english&count=2000",
-            ws.steam_id
-        );
+        let mut url = community_url(&format!("/inventory/{}/753/6?l=english&count=2000", ws.steam_id));
         if let Some(s) = &start {
             url.push_str(&format!("&start_assetid={s}"));
         }
@@ -382,7 +379,7 @@ pub async fn inventory(ws: &WebSession) -> Result<Vec<InvItem>> {
 const STEAM_APP: u32 = 753;
 
 pub async fn wallet(ws: &WebSession) -> Result<Wallet> {
-    let html = ws.get_text("https://steamcommunity.com/market/").await?;
+    let html = ws.get_text(&community_url("/market/")).await?;
     Wallet::read(&html).ok_or_else(|| anyhow!("Steam's market page showed no wallet"))
 }
 
@@ -398,7 +395,7 @@ pub struct Book {
     pub sell_listings: u32,
 }
 
-fn cents(v: Option<&Value>) -> Option<u32> {
+pub(crate) fn cents(v: Option<&Value>) -> Option<u32> {
     match v? {
         Value::String(s) => s.parse().ok(),
         Value::Number(n) => n.as_u64().and_then(|x| u32::try_from(x).ok()),
@@ -442,13 +439,13 @@ pub fn parse_order_book(text: &str) -> Result<Option<Book>> {
 /// "Too many requests" comes back as a [`SteamBusy`](super::community::SteamBusy) error.
 pub async fn order_book_by_name(ws: &WebSession, hash_name: &str) -> Result<Option<Book>> {
     let query = serde_json::to_string(&(STEAM_APP, hash_name))?;
-    let url = format!("https://steamcommunity.com/market/orderbook?q=Load&qp={}", urlencoding::encode(&query));
+    let url = community_url(&format!("/market/orderbook?q=Load&qp={}", urlencoding::encode(&query)));
     let text = ws.get_query_or_busy(&url).await.map_err(|e| plain_refusal(e, "order book lookup"))?;
     parse_order_book(&text)
 }
 
 /// A refusal says so without the address (long, and the same for every item).
-fn plain_refusal(e: anyhow::Error, what: &str) -> anyhow::Error {
+pub(crate) fn plain_refusal(e: anyhow::Error, what: &str) -> anyhow::Error {
     if super::community::steam_busy(&e).is_some() || super::community::connection_failed(&e) {
         e
     } else {
@@ -460,9 +457,9 @@ fn plain_refusal(e: anyhow::Error, what: &str) -> anyhow::Error {
 /// 2026, by the number its listing page gave the item (kept from back then),
 /// in a given currency.
 pub async fn order_book_by_id(ws: &WebSession, item_nameid: u64, currency: u32) -> Result<Book> {
-    let url = format!(
-        "https://steamcommunity.com/market/itemordershistogram?country=US&language=english&currency={currency}&item_nameid={item_nameid}&two_factor=0&norender=1"
-    );
+    let url = community_url(&format!(
+        "/market/itemordershistogram?country=US&language=english&currency={currency}&item_nameid={item_nameid}&two_factor=0&norender=1"
+    ));
     let text = ws.get_text_or_busy(&url).await?;
     let v: Value = serde_json::from_str(&text).context("order book JSON")?;
     if v.get("success").and_then(Value::as_i64) != Some(1) {
@@ -586,7 +583,7 @@ fn search_url(what: &SearchFor, currency: u32, start: usize) -> String {
         "sort": 1,
         "direction": 1,
     }]);
-    format!("https://steamcommunity.com/market/actions?q=Search&qp={}", urlencoding::encode(&query.to_string()))
+    community_url(&format!("/market/actions?q=Search&qp={}", urlencoding::encode(&query.to_string())))
 }
 
 /// A price as Steam writes it out ("$0.05", "0,05€", "0.19 SR", "¥ 6",
@@ -658,15 +655,21 @@ pub async fn search(ws: &WebSession, what: &SearchFor, currency: u32, start: usi
 // -------------------------------------------------------- selling/listings --
 
 pub async fn sell(ws: &WebSession, asset_id: &str, seller_cents: u32) -> Result<SellOutcome> {
+    sell_asset(ws, STEAM_APP, "6", asset_id, seller_cents).await
+}
+
+/// Lists one item of any game: `app` and `context` say which inventory the
+/// asset is in (753/6 for cards and the like, 730/2 for Counter-Strike 2).
+pub async fn sell_asset(ws: &WebSession, app: u32, context: &str, asset_id: &str, seller_cents: u32) -> Result<SellOutcome> {
     let resp = ws
         .client
-        .post("https://steamcommunity.com/market/sellitem/")
+        .post(community_url("/market/sellitem/"))
         .header("Referer", format!("https://steamcommunity.com/profiles/{}/inventory/", ws.steam_id))
         .header("Origin", "https://steamcommunity.com")
         .form(&[
             ("sessionid", ws.session_id.as_str()),
-            ("appid", "753"),
-            ("contextid", "6"),
+            ("appid", &app.to_string()),
+            ("contextid", context),
             ("assetid", asset_id),
             ("amount", "1"),
             ("price", &seller_cents.to_string()),
@@ -744,7 +747,7 @@ pub async fn my_listings(ws: &WebSession) -> Result<Vec<Listing>> {
     let mut all = Vec::new();
     let mut start = 0u32;
     loop {
-        let url = format!("https://steamcommunity.com/market/mylistings/render/?query=&start={start}&count=100");
+        let url = community_url(&format!("/market/mylistings/render/?query=&start={start}&count=100"));
         let text = ws.get_text(&url).await?;
         let v: Value = serde_json::from_str(&text).context("listings JSON")?;
         if v.get("success").and_then(Value::as_bool) != Some(true) {
@@ -767,7 +770,7 @@ pub async fn my_listings(ws: &WebSession) -> Result<Vec<Listing>> {
 pub async fn remove_listing(ws: &WebSession, listing_id: &str) -> Result<()> {
     let resp = ws
         .client
-        .post(format!("https://steamcommunity.com/market/removelisting/{listing_id}"))
+        .post(community_url(&format!("/market/removelisting/{listing_id}")))
         .header("Referer", "https://steamcommunity.com/market/")
         .header("Origin", "https://steamcommunity.com")
         .form(&[("sessionid", ws.session_id.as_str())])

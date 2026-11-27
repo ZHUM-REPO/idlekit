@@ -1,0 +1,77 @@
+{
+ "success": true,
+ "facets": {
+  "Exterior": {
+   "appid": 730,
+   "name": "Exterior",
+   "localized_name": "Exterior",
+   "tags": {
+    "WearCategory2": {
+     "localized_name": "Field-Tested",
+     "matches": "6446208"
+    },
+    "WearCategory1": {
+     "localized_name": "Minimal Wear",
+     "matches": "2210986"
+    },
+    "WearCategory4": {
+     "localized_name": "Battle-Scarred",
+     "matches": "1132358"
+    },
+    "WearCategory0": {
+     "localized_name": "Factory New",
+     "matches": "703452"
+    },
+    "WearCategory3": {
+     "localized_name": "Well-Worn",
+     "matches": "569570"
+    },
+    "WearCategoryNA": {
+     "localized_name": "Not Painted",
+     "matches": "1268"
+    }
+   }
+  },
+  "Quality": {
+   "appid": 730,
+   "name": "Quality",
+   "localized_name": "Category",
+   "tags": {
+    "normal": {
+     "localized_name": "Normal",
+     "matches": "10726273",
+     "color": "B2B2B2"
+    },
+    "strange": {
+     "localized_name": "StatTrak™",
+     "matches": "290588",
+     "color": "CF6A32"
+    },
+    "tournament": {
+     "localized_name": "Souvenir",
+     "matches": "152124",
+     "color": "FFD700"
+    }
+   }
+  },
+  "Type": {
+   "appid": 730,
+   "name": "Type",
+   "localized_name": "Type",
+   "tags": {
+    "CSGO_Type_SMG": {
+     "localized_name": "SMG",
+     "matches": "3178380"
+    },
+    "CSGO_Type_Pistol": {
+     "localized_name": "Pistol",
+     "matches": "2689021"
+    },
+    "CSGO_Type_Rifle": {
+     "localized_name": "Rifle",
+     "matches": "1813603"
+    }
+   }
+  }
+ }
+}

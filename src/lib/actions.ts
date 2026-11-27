@@ -111,6 +111,53 @@ export const ACTIONS: Record<string, Action> = {
   market_remove: { label: "Remove market listings", detail: (a) => `${count(a.listingIds)} listing(s)` },
   market_cancel: { label: "Cancel the market task" },
 
+  // The CS2 market. A search's words and an item's name are kept; nothing about who trades with whom.
+  cs2_facets: { label: "Read the CS2 market's filters", quiet: true },
+  cs2_search: {
+    label: "Search the CS2 market",
+    detail: (a) => {
+      const q = (a.query ?? {}) as { text?: string; filters?: Record<string, unknown[]>; start?: number };
+      const tags = Object.values(q.filters ?? {}).reduce((n, list) => n + count(list), 0);
+      return `${q.text?.trim() ? `"${q.text.trim()}"` : "everything"}${tags ? `, ${tags} filter tag(s)` : ""}${q.start ? `, from ${q.start} on` : ""}`;
+    },
+  },
+  cs2_suggest: { label: "Suggest names for the search box", quiet: true },
+  cs2_item: { label: "Open a CS2 item's listings", detail: (a) => `${String(a.id)}${a.start ? `, from ${String(a.start)} on` : ""}` },
+  cs2_about: { label: "Read a CS2 item's description", detail: (a) => String(a.hashName), quiet: true },
+  // Kept fresh while an item is open: the backend says what each read found.
+  cs2_book: { label: "Read a CS2 item's order book", detail: (a) => String(a.hashName), quiet: true },
+  cs2_history: { label: "Read a CS2 item's price history", detail: (a) => String(a.hashName), quiet: true },
+  cs2_buyer: { label: "Read the wallet", detail: account, quiet: true },
+  cs2_buy_listing: {
+    label: "Buy a CS2 listing",
+    detail: (a) => {
+      const l = (a.listing ?? {}) as { hashName?: string; price?: number; fee?: number };
+      return `${String(l.hashName)} for ${(((l.price ?? 0) + (l.fee ?? 0)) / 100).toFixed(2)}${a.confirmation ? ", after confirming" : ""}`;
+    },
+  },
+  cs2_buy_order: {
+    label: "Place a CS2 buy order",
+    detail: (a) => `${String(a.quantity)} × ${String(a.hashName)} at ${(Number(a.priceEach) / 100).toFixed(2)} each${a.confirmation ? ", after confirming" : ""}`,
+  },
+  cs2_order_status: { label: "Check a buy order", quiet: true },
+  cs2_cancel_order: { label: "Cancel a buy order" },
+  cs2_mine: { label: "Load CS2 listings and buy orders", detail: account },
+  cs2_inventory: { label: "Load the CS2 inventory", detail: account },
+  cs2_sell: {
+    label: "List CS2 items on the market",
+    detail: (a) => {
+      const items = (Array.isArray(a.items) ? a.items : []) as { buyerCents?: number }[];
+      return `${items.length} item(s), buyers pay ${(items.reduce((n, i) => n + (i.buyerCents ?? 0), 0) / 100).toFixed(2)} in all`;
+    },
+  },
+
+  // Trade offers. The trade link and the other player are never part of a line written here.
+  trade_offers: { label: "Load trade offers", detail: account },
+  trade_partner_items: { label: "Load the other player's items for an offer" },
+  trade_send: { label: "Send a trade offer", detail: (a) => `${count(a.give)} item(s) given for ${count(a.receive)} item(s)` },
+  trade_accept: { label: "Accept a trade offer" },
+  trade_withdraw: { label: "Decline or cancel a trade offer", detail: (a) => String(a.how) },
+
   set_autostart: { label: "Start with the computer", detail: (a) => onOff(a.enabled) },
   window_close_choice: { label: "Answer the close question", detail: (a) => String(a.action) },
   // Moving the window and asking its state are not worth a line each.

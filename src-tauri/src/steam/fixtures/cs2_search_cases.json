@@ -1,0 +1,118 @@
+{
+ "data": {
+  "start": 0,
+  "total_count": 446,
+  "grouping": 1,
+  "facets": [],
+  "results": [
+   {
+    "strHash": "Kilowatt Case",
+    "cSellOrders": 670581,
+    "cBuyOrders": 0,
+    "unSteamFee": 1,
+    "unPublisherFee": 1,
+    "eCurrency": 1,
+    "strMinSellSubtotal": "$0.09",
+    "asset_description": {
+     "appid": 730,
+     "classid": "5710094579",
+     "icon_url": "i0CoZ81Ui0m-9KwlBY1L_18m",
+     "name": "Kilowatt Case",
+     "name_color": "b0c3d9",
+     "type": "Base Grade Container",
+     "market_name": "Kilowatt Case",
+     "market_hash_name": "Kilowatt Case",
+     "commodity": true,
+     "tradable": true,
+     "market_bucket_group_name": "Kilowatt Case",
+     "market_bucket_group_id": "G18A8263004"
+    },
+    "app": {
+     "appid": 730,
+     "strName": "Counter-Strike 2"
+    }
+   },
+   {
+    "strHash": "Revolution Case",
+    "cSellOrders": 545401,
+    "cBuyOrders": 0,
+    "unSteamFee": 1,
+    "unPublisherFee": 1,
+    "eCurrency": 1,
+    "strMinSellSubtotal": "$0.12",
+    "asset_description": {
+     "appid": 730,
+     "classid": "5189384637",
+     "icon_url": "i0CoZ81Ui0m-9KwlBY1L_18m",
+     "name": "Revolution Case",
+     "name_color": "b0c3d9",
+     "type": "Base Grade Container",
+     "market_name": "Revolution Case",
+     "market_hash_name": "Revolution Case",
+     "commodity": true,
+     "tradable": true,
+     "market_bucket_group_name": "Revolution Case",
+     "market_bucket_group_id": "G1890263004"
+    },
+    "app": {
+     "appid": 730,
+     "strName": "Counter-Strike 2"
+    }
+   },
+   {
+    "strHash": "Dreams & Nightmares Case",
+    "cSellOrders": 545238,
+    "cBuyOrders": 0,
+    "unSteamFee": 3,
+    "unPublisherFee": 7,
+    "eCurrency": 1,
+    "strMinSellSubtotal": "$0.82",
+    "asset_description": {
+     "appid": 730,
+     "classid": "4717330486",
+     "icon_url": "i0CoZ81Ui0m-9KwlBY1L_18m",
+     "name": "Dreams & Nightmares Case",
+     "name_color": "b0c3d9",
+     "type": "Base Grade Container",
+     "market_name": "Dreams & Nightmares Case",
+     "market_hash_name": "Dreams & Nightmares Case",
+     "commodity": true,
+     "tradable": true,
+     "market_bucket_group_name": "Dreams & Nightmares Case",
+     "market_bucket_group_id": "G18D2253004"
+    },
+    "app": {
+     "appid": 730,
+     "strName": "Counter-Strike 2"
+    }
+   },
+   {
+    "strHash": "Sealed Genesis Terminal",
+    "cSellOrders": 459138,
+    "cBuyOrders": 0,
+    "unSteamFee": 1,
+    "unPublisherFee": 1,
+    "eCurrency": 1,
+    "strMinSellSubtotal": "$0.05",
+    "asset_description": {
+     "appid": 730,
+     "classid": "7488632023",
+     "icon_url": "i0CoZ81Ui0m-9KwlBY1L_18m",
+     "name": "Sealed Genesis Terminal",
+     "name_color": "b0c3d9",
+     "type": "Base Grade Container",
+     "market_name": "Sealed Genesis Terminal",
+     "market_hash_name": "Sealed Genesis Terminal",
+     "commodity": true,
+     "tradable": true,
+     "market_bucket_group_name": "Sealed Genesis Terminal",
+     "market_bucket_group_id": "G18B8283004"
+    },
+    "app": {
+     "appid": 730,
+     "strName": "Counter-Strike 2"
+    }
+   }
+  ]
+ }
+}

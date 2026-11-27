@@ -1,5 +1,6 @@
 mod badge;
 mod commands;
+mod commands_cs2;
 mod config;
 mod desktop;
 mod features;
@@ -363,6 +364,26 @@ pub fn run() {
             commands::market_listings,
             commands::market_remove,
             commands::web_check,
+            commands_cs2::cs2_facets,
+            commands_cs2::cs2_search,
+            commands_cs2::cs2_suggest,
+            commands_cs2::cs2_item,
+            commands_cs2::cs2_about,
+            commands_cs2::cs2_book,
+            commands_cs2::cs2_history,
+            commands_cs2::cs2_buyer,
+            commands_cs2::cs2_buy_listing,
+            commands_cs2::cs2_buy_order,
+            commands_cs2::cs2_order_status,
+            commands_cs2::cs2_cancel_order,
+            commands_cs2::cs2_mine,
+            commands_cs2::cs2_inventory,
+            commands_cs2::cs2_sell,
+            commands_cs2::trade_offers,
+            commands_cs2::trade_partner_items,
+            commands_cs2::trade_send,
+            commands_cs2::trade_accept,
+            commands_cs2::trade_withdraw,
             commands::set_autostart,
             commands::window_close_choice,
             commands::window_control,

@@ -1,17 +1,4 @@
-import {
-  CalendarClock,
-  CalendarDays,
-  ChevronDown,
-  Layers,
-  Library,
-  ScrollText,
-  Settings2,
-  Store,
-  Timer,
-  Trophy,
-  Users,
-  X,
-} from "lucide-react";
+import { CalendarClock, CalendarDays, ChevronDown, Crosshair, Layers, Library, ScrollText, Settings2, Store, Timer, Trophy, Users, X } from "lucide-react";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { inTauri } from "../lib/api";
 import { countdown, dayRange, isOn, nextEvent, useEvents, useEventsKeptFresh } from "../lib/events";
@@ -29,6 +16,7 @@ const NAV: { page: Page; label: string; icon: ReactNode }[] = [
   { page: "farming", label: "Card Farming", icon: <Layers size={17} /> },
   { page: "achievements", label: "Achievements", icon: <Trophy size={17} /> },
   { page: "market", label: "Market", icon: <Store size={17} /> },
+  { page: "cs2", label: "CS2 Market", icon: <Crosshair size={17} /> },
   { page: "events", label: "Upcoming Events", icon: <CalendarDays size={17} /> },
 ];
 

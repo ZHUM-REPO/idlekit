@@ -110,6 +110,11 @@ const STEAM_CURRENCIES: Record<number, string> = {
   40: "CRC", 41: "UYU",
 };
 
+/** A Steam currency's three letters ("SAR"); "USD" for one it doesn't know. */
+export function currencyCode(currency: number): string {
+  return STEAM_CURRENCIES[currency] ?? "USD";
+}
+
 /** Minor units -> localized money string in the Steam wallet's currency. */
 export function money(cents: number | null | undefined, currency = 1): string {
   if (cents == null) return "—";

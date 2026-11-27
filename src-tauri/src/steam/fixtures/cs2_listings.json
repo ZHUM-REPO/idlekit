@@ -1,0 +1,278 @@
+{
+ "data": {
+  "more": true,
+  "start": 0,
+  "total_count": 1705,
+  "listings": [
+   {
+    "listingid": "5934539222390898406",
+    "unPrice": 7485,
+    "unFee": 1122,
+    "publisherFeeApp": 730,
+    "publisherFeePct": 0.10000000149011612,
+    "eCurrency": 31,
+    "strSubtotal": "SAR 86.07",
+    "enhanced_appearances": [
+     {
+      "mime_type": "image/avif",
+      "url": "https://shared.fastly.steamstatic.com/…"
+     }
+    ],
+    "description": {
+     "appid": 730,
+     "classid": "7993039600",
+     "instanceid": "6276417166",
+     "icon_url": "i0CoZ81Ui0m-9KwlBY1L_18m",
+     "name": "AK-47 | Redline",
+     "name_color": "d32ce6",
+     "type": "Classified Rifle",
+     "market_name": "AK-47 | Redline (Well-Worn)",
+     "market_hash_name": "AK-47 | Redline (Well-Worn)",
+     "commodity": false,
+     "market_tradable_restriction": 7,
+     "market_marketable_restriction": 7,
+     "marketable": true,
+     "tradable": true,
+     "market_bucket_group_name": "AK-47 | Redline",
+     "market_bucket_group_id": "G1807209A023004",
+     "market_name_inside_group": "Well-Worn",
+     "market_bucket_id": "1807209A02300438AE8F85F703",
+     "actions": [
+      {
+       "link": "steam://run/730//+csgo_econ_action_preview%20%propid:6%",
+       "name": "Inspect in Game..."
+      }
+     ],
+     "market_actions": [
+      {
+       "link": "steam://run/730//+csgo_econ_action_preview%20%propid:6%",
+       "name": "Inspect in Game..."
+      }
+     ]
+    },
+    "bMine": false,
+    "unSteamFee": 374,
+    "unPublisherFee": 748,
+    "unPricePerUnit": 7485,
+    "unFeePerUnit": 1122,
+    "unSteamFeePerUnit": 374,
+    "unPublisherFeePerUnit": 748,
+    "asset": {
+     "id": "52797040720",
+     "assetid": "52797040720",
+     "instanceid": "6276417166",
+     "classid": "7993039600",
+     "amount": 1,
+     "appid": 730,
+     "contextid": "2",
+     "asset_properties": [
+      {
+       "propertyid": 1,
+       "int_value": "67"
+      },
+      {
+       "propertyid": 2,
+       "float_value": 0.44658032059669495
+      },
+      {
+       "propertyid": 6,
+       "string_value": "1909C9C9D2CEDD18011E39831B311C291D21B4D58BEE1A595A7B161118098B2D24A95208A45C1972DEA3715E69113FBD0B69"
+      }
+     ],
+     "asset_accessories": [
+      {
+       "classid": "5327976097",
+       "standalone_properties": [],
+       "parent_relationship_properties": [
+        {
+         "propertyid": 4,
+         "float_value": 0
+        }
+       ],
+       "nested_accessories": [],
+       "description": {
+        "name": "Sticker | Team Liquid (Holo) | Paris 2023",
+        "type": "Exotic Sticker",
+        "icon_url": "i0CoZ81Ui0m-9KwlBY1L_18m",
+        "market_hash_name": "Sticker | Team Liquid (Holo) | Paris 2023"
+       }
+      }
+     ]
+    }
+   },
+   {
+    "listingid": "4483391583990266684",
+    "unPrice": 7832,
+    "unFee": 1174,
+    "publisherFeeApp": 730,
+    "publisherFeePct": 0.10000000149011612,
+    "eCurrency": 31,
+    "strSubtotal": "SAR 90.06",
+    "enhanced_appearances": [
+     {
+      "mime_type": "image/avif",
+      "url": "https://shared.fastly.steamstatic.com/…"
+     }
+    ],
+    "description": {
+     "appid": 730,
+     "classid": "7993038091",
+     "instanceid": "9221414196",
+     "icon_url": "i0CoZ81Ui0m-9KwlBY1L_18m",
+     "name": "AK-47 | Redline",
+     "name_color": "d32ce6",
+     "type": "Classified Rifle",
+     "market_name": "AK-47 | Redline (Battle-Scarred)",
+     "market_hash_name": "AK-47 | Redline (Battle-Scarred)",
+     "commodity": false,
+     "market_tradable_restriction": 7,
+     "market_marketable_restriction": 7,
+     "marketable": true,
+     "tradable": true,
+     "market_bucket_group_name": "AK-47 | Redline",
+     "market_bucket_group_id": "G1807209A023004",
+     "market_name_inside_group": "Battle-Scarred",
+     "market_bucket_id": "1807209A02300438808080F803",
+     "actions": [
+      {
+       "link": "steam://run/730//+csgo_econ_action_preview%20%propid:6%",
+       "name": "Inspect in Game..."
+      }
+     ],
+     "market_actions": [
+      {
+       "link": "steam://run/730//+csgo_econ_action_preview%20%propid:6%",
+       "name": "Inspect in Game..."
+      }
+     ]
+    },
+    "bMine": false,
+    "unSteamFee": 391,
+    "unPublisherFee": 783,
+    "unPricePerUnit": 7832,
+    "unFeePerUnit": 1174,
+    "unSteamFeePerUnit": 391,
+    "unPublisherFeePerUnit": 783,
+    "asset": {
+     "id": "54622073685",
+     "assetid": "54622073685",
+     "instanceid": "9221414196",
+     "classid": "7993038091",
+     "amount": 1,
+     "appid": 730,
+     "contextid": "2",
+     "asset_properties": [
+      {
+       "propertyid": 1,
+       "int_value": "808"
+      },
+      {
+       "propertyid": 2,
+       "float_value": 0.5415328741073608
+      },
+      {
+       "propertyid": 6,
+       "string_value": "B8A86D5E520573B9A0BF9822BA90BD88BC805E7B1240BBF810BED03B383838B4C8B07C8EDE38"
+      }
+     ],
+     "asset_accessories": []
+    }
+   }
+  ],
+  "facets": [
+   {
+    "tag": {
+     "appid": 730,
+     "category": "ItemSet",
+     "internal_name": "set_community_2",
+     "localized_category_name": "Collection",
+     "localized_tag_name": "The Phoenix Collection"
+    },
+    "listings": 1705
+   },
+   {
+    "tag": {
+     "appid": 730,
+     "category": "Rarity",
+     "internal_name": "Rarity_Legendary_Weapon",
+     "localized_category_name": "Quality",
+     "localized_tag_name": "Classified",
+     "color": "d32ce6"
+    },
+    "listings": 1705
+   },
+   {
+    "tag": {
+     "appid": 730,
+     "category": "Type",
+     "internal_name": "CSGO_Type_Rifle",
+     "localized_category_name": "Type",
+     "localized_tag_name": "Rifle"
+    },
+    "listings": 1705
+   },
+   {
+    "tag": {
+     "appid": 730,
+     "category": "Weapon",
+     "internal_name": "weapon_ak47",
+     "localized_category_name": "Weapon",
+     "localized_tag_name": "AK-47"
+    },
+    "listings": 1705
+   },
+   {
+    "tag": {
+     "appid": 730,
+     "category": "Quality",
+     "internal_name": "normal",
+     "localized_category_name": "Category",
+     "localized_tag_name": "Normal",
+     "color": "B2B2B2"
+    },
+    "listings": 1471
+   },
+   {
+    "tag": {
+     "appid": 730,
+     "category": "Exterior",
+     "internal_name": "WearCategory2",
+     "localized_category_name": "Exterior",
+     "localized_tag_name": "Field-Tested"
+    },
+    "listings": 1395
+   },
+   {
+    "tag": {
+     "appid": 730,
+     "category": "TournamentTeam",
+     "internal_name": "Team61",
+     "localized_category_name": "Team",
+     "localized_tag_name": "FaZe Clan"
+    },
+    "listings": 283
+   },
+   {
+    "tag": {
+     "appid": 730,
+     "category": "Quality",
+     "internal_name": "strange",
+     "localized_category_name": "Category",
+     "localized_tag_name": "StatTrak™",
+     "color": "CF6A32"
+    },
+    "listings": 224
+   },
+   {
+    "tag": {
+     "appid": 730,
+     "category": "Exterior",
+     "internal_name": "WearCategory1",
+     "localized_category_name": "Exterior",
+     "localized_tag_name": "Minimal Wear"
+    },
+    "listings": 98
+   }
+  ]
+ }
+}

@@ -22,6 +22,7 @@ import type {
   UpdateState,
 } from "./types";
 import { US_DOLLAR_WALLET } from "./format";
+import { cs2Mock } from "./mock-cs2";
 
 type Cb = (payload: unknown) => void;
 
@@ -426,6 +427,7 @@ export function createMock() {
   // notices a list that is a new object.
   const pushIdle = (sid: string) => emit("idle://status", { steamId: sid, games: [...(idle[sid] ?? [])] });
   const delay = (ms: number) => new Promise((r) => setTimeout(r, ms));
+  const cs2 = cs2Mock(params, ME);
 
   const handlers: Record<string, (a: Record<string, any>) => unknown | Promise<unknown>> = {
     get_bootstrap: (): Bootstrap => ({
@@ -816,11 +818,14 @@ export function createMock() {
     market_remove: async ({ listingIds }) => {
       priceRuns++;
       await delay(500);
+      cs2.removeListings(listingIds);
       return listingIds.length;
     },
     market_cancel: () => {
       priceCancelled = true;
     },
+
+    ...cs2.handlers,
 
     set_autostart: ({ enabled }) => (autostart = !!enabled),
     window_close_choice: () => undefined,

@@ -24,13 +24,13 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::time::Duration;
 use tauri::{AppHandle, State};
 
-type CmdResult<T> = Result<T, String>;
+pub(crate) type CmdResult<T> = Result<T, String>;
 
 fn err(e: impl std::fmt::Display) -> String {
     format!("{e:#}")
 }
 
-fn anyhow_err(e: anyhow::Error) -> String {
+pub(crate) fn anyhow_err(e: anyhow::Error) -> String {
     format!("{e:#}")
 }
 
@@ -947,7 +947,7 @@ struct MarketProgress {
     message: String,
 }
 
-fn progress(task: &str, done: usize, total: usize, message: impl Into<String>) {
+pub(crate) fn progress(task: &str, done: usize, total: usize, message: impl Into<String>) {
     logbus::emit(
         "market://progress",
         MarketProgress { task: task.into(), done, total, message: message.into() },
@@ -1067,6 +1067,13 @@ async fn price_wallet(app: &App, ws: &WebSession, steam_id: &str) -> (market::Wa
         Some(kept) if kept.fresh(now_ms()) => (kept.wallet, WalletFrom::Kept),
         _ => market_wallet(app, ws, steam_id).await,
     }
+}
+
+/// The account's wallet, for work outside a price check that only needs its
+/// currency and fee numbers (the CS2 market): as read in the last day, else
+/// from the market page.
+pub(crate) async fn wallet_for_prices(app: &App, ws: &WebSession, steam_id: &str) -> market::Wallet {
+    price_wallet(app, ws, steam_id).await.0
 }
 
 /// "Checking prices, about 12 min left", for the progress bar.

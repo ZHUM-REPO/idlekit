@@ -58,6 +58,27 @@ const NETWORK_RETRIES: [u64; 2] = [3, 8];
 /// search): IdleKit's go out the same way.
 const QUERY_HEADER: (&str, &str) = ("x-valve-request-type", "queryAction");
 
+/// An address on Steam's community site. A development build can be pointed
+/// at a local stand-in instead (`IDLEKIT_TEST_COMMUNITY`), for trying the
+/// market and trading without Steam; the installed app always asks Steam.
+pub fn community_url(path: &str) -> String {
+    #[cfg(debug_assertions)]
+    if let Ok(base) = std::env::var("IDLEKIT_TEST_COMMUNITY") {
+        return format!("{}{path}", base.trim_end_matches('/'));
+    }
+    format!("https://steamcommunity.com{path}")
+}
+
+/// An address on Steam's Web API, with the same stand-in for development
+/// builds (`IDLEKIT_TEST_API`).
+pub fn api_url(path: &str) -> String {
+    #[cfg(debug_assertions)]
+    if let Ok(base) = std::env::var("IDLEKIT_TEST_API") {
+        return format!("{}{path}", base.trim_end_matches('/'));
+    }
+    format!("{}{path}", super::webapi::API)
+}
+
 /// Steam answered, but not to this account: the page was shown to a visitor
 /// who isn't signed in, or to someone else. The web session has ended.
 #[derive(Debug)]
@@ -260,6 +281,34 @@ impl WebSession {
                 Err(e) => return Err(anyhow::Error::new(e.without_url())).with_context(|| format!("GET {place}")),
             }
         }
+    }
+
+    /// POSTs a form the way Steam's own pages do, with the page it would come
+    /// from as the Referer, and gives back the status and the answer's text.
+    /// Never sent twice by itself: buying, selling and trading must not
+    /// repeat. "Too many requests" comes back as [`SteamBusy`], and an answer
+    /// that says nobody is signed in as [`SessionEnded`].
+    pub async fn post_form(&self, url: &str, referer: &str, form: &[(&str, &str)]) -> Result<(u16, String)> {
+        let place = reqwest::Url::parse(url).map(|u| crate::net::place(&u)).unwrap_or_else(|_| "a Steam page".into());
+        let resp = self
+            .client
+            .post(url)
+            .header("Referer", referer)
+            .header("Origin", "https://steamcommunity.com")
+            .form(form)
+            .logged()
+            .await
+            .map_err(|e| anyhow::Error::new(e.without_url()))
+            .with_context(|| format!("POST {place}"))?;
+        let status = resp.status().as_u16();
+        if status == 429 {
+            return Err(SteamBusy(status).into());
+        }
+        if status == 401 || status == 403 {
+            return Err(SessionEnded.into());
+        }
+        let text = resp.text().await.map_err(|e| anyhow::Error::new(e.without_url())).with_context(|| format!("POST {place}"))?;
+        Ok((status, text))
     }
 
     /// Checks a page was shown to this account, signed in. Shown to nobody or
