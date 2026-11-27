@@ -12,7 +12,8 @@ interface Action {
   label: string;
   /** The safe details worth keeping. */
   detail?: (a: Args) => string;
-  /** Background refreshes: only written down when they fail. */
+  /** Background refreshes: written down as debug lines, at most once a
+   *  minute each with how many times they ran; failures every time. */
   quiet?: boolean;
 }
 
@@ -143,11 +144,31 @@ export function startLine(cmd: string, args?: Args): ActionLine | null {
   return { level: "debug", message: `${describe(cmd, args)}: started` };
 }
 
-/** The line written when a command ends. Quiet commands only get one when they fail. */
-export function endLine(cmd: string, args: Args | undefined, ok: boolean, ms: number, error?: string): ActionLine | null {
-  if (UNLOGGED.has(cmd) || (ok && ACTIONS[cmd]?.quiet)) return null;
+/** How often a quiet command that keeps working is written down. */
+export const QUIET_EVERY_MS = 60_000;
+/** Per quiet command: when it was last written down, and the runs since. */
+const quietSeen = new Map<string, { at: number; since: number }>();
+
+/** The line written when a command ends. A quiet command that worked gets a
+ *  debug line at most once a minute, saying how often it ran meanwhile. */
+export function endLine(
+  cmd: string,
+  args: Args | undefined,
+  ok: boolean,
+  ms: number,
+  error?: string,
+  now: number = Date.now(),
+): ActionLine | null {
+  if (UNLOGGED.has(cmd)) return null;
   const what = describe(cmd, args);
-  return ok
-    ? { level: "info", message: `${what}: done in ${Math.round(ms)} ms` }
-    : { level: "error", message: `${what}: FAILED after ${Math.round(ms)} ms: ${error ?? "unknown error"}` };
+  if (!ok) return { level: "error", message: `${what}: FAILED after ${Math.round(ms)} ms: ${error ?? "unknown error"}` };
+  if (!ACTIONS[cmd]?.quiet) return { level: "info", message: `${what}: done in ${Math.round(ms)} ms` };
+  const seen = quietSeen.get(cmd);
+  if (seen && now - seen.at < QUIET_EVERY_MS) {
+    seen.since += 1;
+    return null;
+  }
+  const more = seen?.since ? ` (and ${seen.since} more time(s) in the last ${Math.round((now - seen.at) / 1000)} s)` : "";
+  quietSeen.set(cmd, { at: now, since: 0 });
+  return { level: "debug", message: `${what}: done in ${Math.round(ms)} ms${more}` };
 }

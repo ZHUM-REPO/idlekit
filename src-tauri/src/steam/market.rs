@@ -1,5 +1,6 @@
 //! Steam Community Market: inventory (app 753 / context 6 — cards, emoticons,
 //! backgrounds, boosters), live order-book pricing, listing and delisting.
+use crate::net::Logged;
 use super::community::WebSession;
 use anyhow::{anyhow, bail, Context, Result};
 use scraper::{Html, Selector};
@@ -495,7 +496,7 @@ pub async fn sell(ws: &WebSession, asset_id: &str, seller_cents: u32) -> Result<
             ("amount", "1"),
             ("price", &seller_cents.to_string()),
         ])
-        .send()
+        .logged()
         .await?;
     let status = resp.status();
     let v: Value = resp.json().await.unwrap_or(Value::Null);
@@ -595,7 +596,7 @@ pub async fn remove_listing(ws: &WebSession, listing_id: &str) -> Result<()> {
         .header("Referer", "https://steamcommunity.com/market/")
         .header("Origin", "https://steamcommunity.com")
         .form(&[("sessionid", ws.session_id.as_str())])
-        .send()
+        .logged()
         .await?;
     if !resp.status().is_success() {
         bail!("HTTP {} removing listing {listing_id}", resp.status());

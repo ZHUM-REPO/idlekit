@@ -497,6 +497,8 @@ async fn download_and_hand_over(
     by_itself: Option<bool>,
 ) -> Result<std::convert::Infallible, tauri_plugin_updater::Error> {
     let mut last_published = Instant::now();
+    let started = Instant::now();
+    logbus::info("update", format!("Downloading IdleKit {}", shown(&update.version)));
     let bytes = update
         .download(
             |chunk, total| {
@@ -512,7 +514,17 @@ async fn download_and_hand_over(
             },
             || {},
         )
-        .await?;
+        .await
+        .inspect_err(|e| logbus::warn("update", format!("The download stopped after {} s: {}", started.elapsed().as_secs(), explain(e))))?;
+    logbus::info(
+        "update",
+        format!(
+            "Downloaded IdleKit {}: {:.1} MB in {:.1} s; its signature checks out",
+            shown(&update.version),
+            bytes.len() as f64 / 1_048_576.0,
+            started.elapsed().as_secs_f64()
+        ),
+    );
 
     app.updates.state.lock().unwrap().phase = Phase::Installing;
     publish(app, handle);
@@ -521,11 +533,17 @@ async fn download_and_hand_over(
     // The installer replaces the helper and Steam's library, so nothing may be using them.
     app.farming.stop_everything();
     app.unlocker.stop_everything();
-    let _ = tokio::time::timeout(Duration::from_secs(5), async {
+    // Direct accounts sign off from Steam properly; their web sessions are
+    // kept, so the new version starts with them and needs nothing from Steam.
+    let stopped = tokio::time::timeout(Duration::from_secs(5), async {
         app.helpers.stop_all().await;
         app.cm.disconnect_all().await;
     })
     .await;
+    if stopped.is_err() {
+        logbus::warn("update", "Stopping everything for the update took more than 5 s; installing anyway");
+    }
+    logbus::info("update", "Handing over to the installer; IdleKit restarts when it is done");
 
     match by_itself {
         // Asked for from the window: come back with the window open.

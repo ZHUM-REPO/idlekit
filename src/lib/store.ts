@@ -1,6 +1,6 @@
 import { useEffect } from "react";
 import { create } from "zustand";
-import { api, errorText, logLine, on } from "./api";
+import { api, errorText, logLine, on, type EventMap } from "./api";
 import { rememberIcons } from "./art";
 import type {
   Account,
@@ -133,6 +133,8 @@ let pendingWrite: ReturnType<typeof setTimeout> | undefined;
 
 /** Numbers log lines in the order the window got them. */
 let nextLine = 1;
+/** Whether init has run (see init). */
+let initStarted = false;
 /** How many lines the Logs page keeps. */
 const LOG_LINES = 1500;
 /** The longest new lines wait when no frame is drawn to add them on. */
@@ -168,7 +170,67 @@ export const useApp = create<State>((set, get) => ({
   updateDismissed: null,
 
   async init() {
+    // Once per window: React's development mode runs effects twice, and a
+    // second start would listen to everything twice.
+    if (initStarted) return;
+    initStarted = true;
+    // Everything is listened to before the first look at the app's state,
+    // and the backend numbers what it sends. What arrives while the window
+    // starts is held, then applied if it is newer than that look: nothing is
+    // missed (an account that came online meanwhile) and nothing is applied twice.
+    let snapshotSeq: number | null = null;
+    const held: (() => void)[] = [];
+    const seqOf = (p: unknown) =>
+      typeof p === "object" && p !== null && typeof (p as { seq?: unknown }).seq === "number" ? (p as { seq: number }).seq : undefined;
+    const live = <K extends keyof EventMap>(event: K, apply: (payload: EventMap[K]) => void) =>
+      on(event, (payload) => {
+        const run = () => {
+          const seq = seqOf(payload);
+          if (seq === undefined || snapshotSeq === null || seq > snapshotSeq) apply(payload);
+        };
+        if (snapshotSeq === null) held.push(run);
+        else run();
+      });
+
+    // Lines can come in bursts. They are gathered and added once per frame,
+    // so a burst copies the list once, not once per line. A window that isn't
+    // on screen may draw no frames, so a timer hands them over as well, and
+    // no more lines wait than the list keeps.
+    let arrived: LogLine[] = [];
+    let frame = 0;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const handOver = () => {
+      cancelAnimationFrame(frame);
+      clearTimeout(timer);
+      timer = undefined;
+      const batch = arrived;
+      arrived = [];
+      if (batch.length) set((s) => ({ logs: [...s.logs, ...batch].slice(-LOG_LINES) }));
+    };
     try {
+      await Promise.all([
+        live("log://line", (l) => {
+          arrived.push({ ...l, n: nextLine++ });
+          if (arrived.length > LOG_LINES) arrived.splice(0, arrived.length - LOG_LINES);
+          if (timer !== undefined) return;
+          frame = requestAnimationFrame(handOver);
+          timer = setTimeout(handOver, LOG_HAND_OVER_MS);
+        }),
+        live("state://accounts", () => void get().refreshAccounts()),
+        // Names for games listed by number only arrive after the list itself.
+        live("games://updated", (steamId) => {
+          if (get().games[steamId]) void get().loadGames(steamId);
+        }),
+        live("cm://status", (c) => set((s) => ({ cm: { ...s.cm, [c.steamId]: c } }))),
+        live("idle://status", (snap) => set((s) => ({ idle: { ...s.idle, [snap.steamId]: snap.games } }))),
+        live("farm://status", (f) => set((s) => ({ farm: { ...s.farm, [f.steamId]: f } }))),
+        live("unlock://status", (u) => set((s) => ({ unlock: { ...s.unlock, [u.steamId]: u } }))),
+        live("auth://status", (a) => set((s) => ({ auth: { ...s.auth, [a.sessionId]: a } }))),
+        live("market://progress", (p) => set({ marketProgress: p.done >= p.total ? null : p })),
+        live("update://state", (update) => set({ update })),
+        live("window://close-requested", () => set({ closePrompt: true })),
+        live("app://navigate", (page) => PAGES.includes(page as Page) && set({ page: page as Page })),
+      ]);
       const b = await api.bootstrap();
       applyTheme(b.settings);
       const params = new URLSearchParams(window.location.search);
@@ -195,47 +257,15 @@ export const useApp = create<State>((set, get) => ({
         page: initialPage ?? (b.accounts.length === 0 ? "accounts" : "library"),
         achAppid: initialAch,
       });
+      snapshotSeq = b.seq ?? 0;
+      const early = held.length;
+      held.splice(0).forEach((run) => run());
+      if (early) logLine("debug", "ui", `${early} event(s) came in while the window started; the newer ones were applied`);
     } catch (e) {
       logLine("error", "ui", `IdleKit couldn't start: ${errorText(e)}`);
       set({ fatal: errorText(e) });
       return;
     }
-    // Lines can come in bursts. They are gathered and added once per frame,
-    // so a burst copies the list once, not once per line. A window that isn't
-    // on screen may draw no frames, so a timer hands them over as well, and
-    // no more lines wait than the list keeps.
-    let arrived: LogLine[] = [];
-    let frame = 0;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const handOver = () => {
-      cancelAnimationFrame(frame);
-      clearTimeout(timer);
-      timer = undefined;
-      const batch = arrived;
-      arrived = [];
-      if (batch.length) set((s) => ({ logs: [...s.logs, ...batch].slice(-LOG_LINES) }));
-    };
-    on("log://line", (l) => {
-      arrived.push({ ...l, n: nextLine++ });
-      if (arrived.length > LOG_LINES) arrived.splice(0, arrived.length - LOG_LINES);
-      if (timer !== undefined) return;
-      frame = requestAnimationFrame(handOver);
-      timer = setTimeout(handOver, LOG_HAND_OVER_MS);
-    });
-    on("state://accounts", () => void get().refreshAccounts());
-    // Names for games listed by number only arrive after the list itself.
-    on("games://updated", (steamId) => {
-      if (get().games[steamId]) void get().loadGames(steamId);
-    });
-    on("cm://status", (c) => set((s) => ({ cm: { ...s.cm, [c.steamId]: c } })));
-    on("idle://status", (snap) => set((s) => ({ idle: { ...s.idle, [snap.steamId]: snap.games } })));
-    on("farm://status", (f) => set((s) => ({ farm: { ...s.farm, [f.steamId]: f } })));
-    on("unlock://status", (u) => set((s) => ({ unlock: { ...s.unlock, [u.steamId]: u } })));
-    on("auth://status", (a) => set((s) => ({ auth: { ...s.auth, [a.sessionId]: a } })));
-    on("market://progress", (p) => set({ marketProgress: p.done >= p.total ? null : p }));
-    on("update://state", (update) => set({ update }));
-    on("window://close-requested", () => set({ closePrompt: true }));
-    on("app://navigate", (page) => PAGES.includes(page as Page) && set({ page: page as Page }));
     // Keep "is the Steam client signed in" fresh without hammering anything.
     setInterval(() => void get().refreshLocal(), 15_000);
   },

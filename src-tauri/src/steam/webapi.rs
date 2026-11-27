@@ -1,15 +1,15 @@
 //! Calls to api.steampowered.com: protobuf-encoded service methods (used for the
 //! QR sign-in and token refresh) and plain JSON endpoints.
+use crate::net::Logged;
 use anyhow::{anyhow, bail, Context, Result};
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use protobuf::Message;
 use serde_json::Value;
 use steam_vent_proto_steam::steammessages_auth_steamclient::{
-    CAuthentication_AccessToken_GenerateForApp_Request, CAuthentication_AccessToken_GenerateForApp_Response,
     CAuthentication_BeginAuthSessionViaQR_Request, CAuthentication_BeginAuthSessionViaQR_Response,
     CAuthentication_DeviceDetails, CAuthentication_PollAuthSessionStatus_Request,
-    CAuthentication_PollAuthSessionStatus_Response, EAuthTokenPlatformType, ETokenRenewalType,
+    CAuthentication_PollAuthSessionStatus_Response, EAuthTokenPlatformType,
 };
 
 pub const API: &str = "https://api.steampowered.com";
@@ -92,7 +92,7 @@ async fn service_raw<Req: Message>(
         .header(reqwest::header::USER_AGENT, UA_STEAM_CLIENT)
         .header("Origin", "https://steamloopback.host")
         .header(reqwest::header::ACCEPT, "application/json, text/plain, */*")
-        .send()
+        .logged()
         .await
         .with_context(|| format!("{interface}.{method}: network error"))?;
     let status = resp.status();
@@ -237,21 +237,9 @@ pub async fn poll_auth(http: &reqwest::Client, client_id: u64, request_id: &[u8]
     })
 }
 
-/// Trade a refresh token for a fresh access token (valid ~24h) over HTTPS.
-pub async fn generate_access_token(http: &reqwest::Client, refresh_token: &str, steam_id: u64) -> Result<String> {
-    let mut req = CAuthentication_AccessToken_GenerateForApp_Request::new();
-    req.set_refresh_token(refresh_token.to_string());
-    req.set_steamid(steam_id);
-    req.set_renewal_type(ETokenRenewalType::k_ETokenRenewalType_None);
-    let (body, is_json) = service_raw(http, "Authentication", "GenerateAccessTokenForApp", 1, false, &req).await?;
-    let token = if is_json {
-        jstr(&json_response(&body)?, "access_token")
-    } else {
-        let r = CAuthentication_AccessToken_GenerateForApp_Response::parse_from_bytes(&body)?;
-        (!r.access_token().is_empty()).then(|| r.access_token().to_string())
-    };
-    token.ok_or_else(|| anyhow!("Steam did not return an access token"))
-}
+// A new access token is never asked for here, over HTTPS: for a Steam-client
+// sign-in Steam answers AccountLogonDenied (63), then AccessDenied (15), and
+// the saved sign-in stops working everywhere. See `cm::generate_web_token`.
 
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug, Default)]
 #[serde(rename_all = "camelCase", default)]
@@ -275,7 +263,7 @@ pub async fn owned_games_web(http: &reqwest::Client, access_token: &str, steam_i
             ("include_played_free_games", "1"),
             ("skip_unvetted_apps", "0"),
         ])
-        .send()
+        .logged()
         .await?;
     if !resp.status().is_success() {
         bail!("GetOwnedGames: HTTP {}", resp.status());
@@ -309,7 +297,7 @@ pub async fn global_achievement_percentages(
     let resp = http
         .get(format!("{API}/ISteamUserStats/GetGlobalAchievementPercentagesForApp/v2/"))
         .query(&[("gameid", appid.to_string())])
-        .send()
+        .logged()
         .await?;
     if !resp.status().is_success() {
         bail!("GetGlobalAchievementPercentagesForApp: HTTP {}", resp.status());

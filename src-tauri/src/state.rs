@@ -2,7 +2,9 @@
 //! config persistence, per-account web sessions, games lists, local-client checks.
 use crate::config::{Account, Config};
 use crate::features::{farming::FarmingManager, idler::Idler, unlocker::UnlockerManager};
-use crate::steam::community::WebSession;
+use crate::net::Logged;
+use crate::steam::cm::Refusal;
+use crate::steam::community::{self, WebSession};
 use crate::steam::events::{self, EventList};
 use crate::steam::pricing::{self, PriceList};
 use crate::steam::webapi::{self, OwnedGame};
@@ -16,6 +18,45 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+
+/// A web session this close to running out is replaced before it is used.
+const WEB_MARGIN_SECS: i64 = 600;
+/// How long making a new web session may take, every step together.
+const WEB_RENEW_LIMIT: Duration = Duration::from_secs(75);
+const REFUSED_EARLIER: &str =
+    "Steam refused this account's saved sign-in earlier. Sign in to this account again on the Accounts page.";
+
+/// After a failed try at a new web session, how long the next one waits:
+/// trouble reaching Steam, and Steam limiting sign-ins.
+const WEB_RETRY_AFTER_TROUBLE: Duration = Duration::from_secs(30);
+const WEB_RETRY_AFTER_LIMIT: Duration = Duration::from_secs(10 * 60);
+
+/// A failed try at a new web session (see `App::web_failures`).
+struct WebFailure {
+    at: Instant,
+    print: u64,
+    wait: Duration,
+    message: String,
+}
+
+/// Tells saved sign-ins apart without keeping one: a hash that only lives
+/// as long as this run.
+fn fingerprint(secret: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    secret.hash(&mut h);
+    h.finish()
+}
+
+/// How long a web sign-in is still good, in words: "good for 23 h more".
+fn good_for(token: &str) -> String {
+    let left = jwt::decode(token).map(|c| c.exp - chrono::Utc::now().timestamp()).unwrap_or(0);
+    match left {
+        i64::MIN..=0 => "already run out".into(),
+        1..=5399 => format!("good for {} min more", (left + 30) / 60),
+        _ => format!("good for {} h more", (left + 1800) / 3600),
+    }
+}
 
 #[derive(Serialize, Clone, Debug, Default)]
 #[serde(rename_all = "camelCase")]
@@ -63,6 +104,15 @@ pub struct Inner {
     web: Mutex<HashMap<String, Arc<WebSession>>>,
     /// One refresh at a time per account, so a slow one holds up no other account.
     web_refresh: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+    /// Saved sign-ins Steam refused during this run, by account (a
+    /// fingerprint, never the sign-in itself). Asking again with the same
+    /// one changes nothing and counts against the account at Steam; a new
+    /// sign-in has a new fingerprint and is tried.
+    refused_sign_ins: Mutex<HashMap<String, u64>>,
+    /// The last failed try at a new web session, by account: when, for which
+    /// saved sign-in (a fingerprint), how long to leave Steam alone, and why.
+    /// Pages that ask meanwhile get the same answer instead of a new try each.
+    web_failures: Mutex<HashMap<String, WebFailure>>,
     games: Mutex<HashMap<String, Vec<GameEntry>>>,
     /// What Steam's store calls games, by app id: for the ones that the files
     /// on this PC list by number only.
@@ -126,6 +176,8 @@ impl App {
             unlocker: UnlockerManager::default(),
             web: Mutex::new(HashMap::new()),
             web_refresh: Mutex::new(HashMap::new()),
+            refused_sign_ins: Mutex::new(HashMap::new()),
+            web_failures: Mutex::new(HashMap::new()),
             games: Mutex::new(HashMap::new()),
             store_names: Mutex::new(HashMap::new()),
             naming: Mutex::new(HashMap::new()),
@@ -292,72 +344,119 @@ impl App {
 
     // ------------------------------------------------------- web session --
 
+    /// Puts in a web sign-in that just arrived with a sign-in, and keeps it
+    /// for the next start.
     pub async fn seed_web_session(&self, steam_id: &str, access_token: &str) {
-        if let Ok(ws) = WebSession::from_access_token(steam_id, access_token) {
-            self.web.lock().unwrap().insert(steam_id.to_string(), Arc::new(ws));
+        match WebSession::from_access_token(steam_id, access_token) {
+            Ok(ws) => {
+                self.web.lock().unwrap().insert(steam_id.to_string(), Arc::new(ws));
+                self.keep_web_token(steam_id, access_token);
+                logbus::debug("web", format!("{}: web session ready ({})", logbus::label(steam_id), good_for(access_token)));
+            }
+            Err(e) => logbus::warn("web", format!("{}: the new web sign-in couldn't be used: {e:#}", logbus::label(steam_id))),
         }
     }
 
+    /// Drops the account's web session, in memory and the one kept for the
+    /// next start: a new sign-in replaces it, or Steam no longer takes it.
     pub async fn forget_web_session(&self, steam_id: &str) {
-        self.web.lock().unwrap().remove(steam_id);
+        let held = self.web.lock().unwrap().remove(steam_id).is_some();
+        let key = secrets::web_token_key(steam_id);
+        let kept = secrets::get(&key).is_some();
+        secrets::delete(&key);
+        if held || kept {
+            logbus::debug("web", format!("{}: dropped the web session", logbus::label(steam_id)));
+        }
+    }
+
+    /// Drops the account's web session only if it is still the one that
+    /// failed: another caller may have made a new one in the meantime.
+    fn forget_failed_web_session(&self, steam_id: &str, failed: &WebSession) {
+        let mut web = self.web.lock().unwrap();
+        if web.get(steam_id).is_some_and(|ws| ws.access_token == failed.access_token) {
+            web.remove(steam_id);
+        }
+        drop(web);
+        let key = secrets::web_token_key(steam_id);
+        if !failed.access_token.is_empty() && secrets::get(&key).as_deref() == Some(failed.access_token.as_str()) {
+            secrets::delete(&key);
+        }
+    }
+
+    /// Keeps a web sign-in for the next start, in the system's credential store.
+    fn keep_web_token(&self, steam_id: &str, token: &str) {
+        if let Err(e) = secrets::set(&secrets::web_token_key(steam_id), token) {
+            logbus::warn(
+                "web",
+                format!(
+                    "{}: the web session couldn't be kept for the next start ({e:#}); a new one is made then",
+                    logbus::label(steam_id)
+                ),
+            );
+        }
     }
 
     /// The session kept for this account, unless its access token is about to run out.
     fn kept_web_session(&self, steam_id: &str) -> Option<Arc<WebSession>> {
         let web = self.web.lock().unwrap();
-        web.get(steam_id).filter(|ws| ws.access_token.is_empty() || !jwt::expires_soon(&ws.access_token, 600)).cloned()
+        web.get(steam_id)
+            .filter(|ws| ws.access_token.is_empty() || !jwt::expires_soon(&ws.access_token, WEB_MARGIN_SECS))
+            .cloned()
     }
 
-    /// A signed-in community/store session for this account, refreshing the
-    /// access token from the saved refresh token when it is close to expiry.
+    /// The web sign-in kept from an earlier start (a restart or an update),
+    /// if it is this account's and still good for a while.
+    fn stored_web_session(&self, steam_id: &str) -> Option<WebSession> {
+        let key = secrets::web_token_key(steam_id);
+        let token = secrets::get(&key)?;
+        let who = logbus::label(steam_id);
+        let mine = jwt::decode(&token).is_some_and(|c| c.sub == steam_id);
+        if !mine || jwt::expires_soon(&token, WEB_MARGIN_SECS) {
+            let why = if mine { "has run out" } else { "isn't this account's" };
+            logbus::debug("web", format!("{who}: the web session kept from before {why}; a new one is needed"));
+            secrets::delete(&key);
+            return None;
+        }
+        match WebSession::from_access_token(steam_id, &token) {
+            Ok(ws) => {
+                logbus::info("web", format!("{who}: using the web session kept from before ({})", good_for(&token)));
+                Some(ws)
+            }
+            Err(e) => {
+                logbus::debug("web", format!("{who}: the web session kept from before couldn't be used ({e:#})"));
+                secrets::delete(&key);
+                None
+            }
+        }
+    }
+
+    /// A signed-in community/store session for this account.
+    ///
+    /// In order: the one in memory; the one kept from an earlier start; a new
+    /// one made from the saved sign-in over Steam's own servers; a pasted
+    /// cookie. A new one is never asked for over HTTPS: for a Steam-client
+    /// sign-in Steam refuses that and then throws the saved sign-in away,
+    /// which is what broke the web session after every update before 2.3.
     pub async fn web_session(&self, steam_id: &str) -> Result<Arc<WebSession>> {
         if let Some(ws) = self.kept_web_session(steam_id) {
             return Ok(ws);
         }
         let gate = self.web_refresh.lock().unwrap().entry(steam_id.to_string()).or_default().clone();
         let _refreshing = gate.lock().await;
-        // Another caller may have refreshed it while this one waited.
+        // Another caller may have made it while this one waited.
         if let Some(ws) = self.kept_web_session(steam_id) {
             return Ok(ws);
         }
-        let ws = if let Some(refresh) = secrets::get(&secrets::refresh_token_key(steam_id)) {
-            let sid: u64 = steam_id.parse()?;
-            let token = if self.cm.is_online(steam_id) {
-                match self.cm.access_token(steam_id, &refresh).await {
-                    Ok(t) => t,
-                    Err(_) => webapi::generate_access_token(&self.http, &refresh, sid).await?,
-                }
-            } else {
-                match webapi::generate_access_token(&self.http, &refresh, sid).await {
-                    Ok(t) => t,
-                    Err(web_err) => {
-                        // Fall back to a short CM session, which can always mint one.
-                        logbus::debug("web", format!("HTTPS token refresh failed ({web_err:#}); trying a direct connection"));
-                        let acct = self.account(steam_id)?;
-                        let mode = acct.mode.clone();
-                        self.cm.configure(
-                            steam_id,
-                            &acct.account_name,
-                            acct.persona_state,
-                            &self.settings().idle_status_text,
-                        );
-                        self.cm.connect(steam_id).await.map_err(|e| {
-                            anyhow!("Could not refresh the web session ({web_err:#}; {e:#}). Sign in to this account again.")
-                        })?;
-                        let token = self.cm.access_token(steam_id, &refresh).await;
-                        if mode != "direct" {
-                            self.cm.disconnect(steam_id).await;
-                        }
-                        token?
-                    }
-                }
-            };
-            WebSession::from_access_token(steam_id, &token)?
+        let ws = if let Some(ws) = self.stored_web_session(steam_id) {
+            ws
+        } else if let Some(refresh) = secrets::get(&secrets::refresh_token_key(steam_id)) {
+            self.new_web_session(steam_id, &refresh).await?
         } else if let Some(cookie) = secrets::get(&secrets::cookie_key(steam_id)) {
             let ws = WebSession::from_cookie(&cookie)?;
             if !ws.access_token.is_empty() && jwt::expires_soon(&ws.access_token, 0) {
                 bail!("The saved steamLoginSecure cookie has expired — paste a fresh one in Accounts");
             }
+            logbus::debug("web", format!("{}: using the pasted web session cookie", logbus::label(steam_id)));
             ws
         } else {
             bail!("This account has no web session. In Accounts, sign in with QR/password or paste a steamLoginSecure cookie.");
@@ -365,6 +464,114 @@ impl App {
         let ws = Arc::new(ws);
         self.web.lock().unwrap().insert(steam_id.to_string(), ws.clone());
         Ok(ws)
+    }
+
+    /// A new web session made from the saved sign-in over Steam's servers.
+    async fn new_web_session(&self, steam_id: &str, refresh: &str) -> Result<WebSession> {
+        let who = logbus::label(steam_id);
+        let print = fingerprint(refresh);
+        if self.refused_sign_ins.lock().unwrap().get(steam_id) == Some(&print) {
+            logbus::debug("web", format!("{who}: not asking Steam again: it refused this saved sign-in earlier"));
+            bail!("{REFUSED_EARLIER}");
+        }
+        if let Some(f) = self.web_failures.lock().unwrap().get(steam_id).filter(|f| f.print == print && f.at.elapsed() < f.wait) {
+            let ago = f.at.elapsed().as_secs();
+            logbus::debug("web", format!("{who}: not asking Steam again yet: the last try failed {ago} s ago"));
+            bail!("{}", f.message);
+        }
+        let account = self.account(steam_id)?;
+        logbus::info("web", format!("{who}: making a new web session over Steam's servers"));
+        let started = Instant::now();
+        let minted = tokio::time::timeout(WEB_RENEW_LIMIT, self.cm.mint_web_token(steam_id, &account.account_name, refresh)).await;
+        let ms = started.elapsed().as_millis();
+        let failed = |wait: Duration, message: String| {
+            self.web_failures
+                .lock()
+                .unwrap()
+                .insert(steam_id.to_string(), WebFailure { at: Instant::now(), print, wait, message: message.clone() });
+            anyhow!(message)
+        };
+        let token = match minted {
+            Ok(Ok(token)) => token,
+            Ok(Err(e)) if e.refusal == Refusal::SignIn => {
+                self.refused_sign_ins.lock().unwrap().insert(steam_id.to_string(), print);
+                // The Accounts page says so at once.
+                self.emit_accounts();
+                logbus::error("web", format!("{who}: Steam refused the saved sign-in ({e}, after {ms} ms); sign in to this account again"));
+                bail!("Steam refused this account's saved sign-in ({e}). Sign in to this account again on the Accounts page.");
+            }
+            Ok(Err(e)) if e.refusal == Refusal::RateLimited => {
+                logbus::warn("web", format!("{who}: couldn't make a new web session ({e}, after {ms} ms); trying again in 10 min at the soonest"));
+                return Err(failed(
+                    WEB_RETRY_AFTER_LIMIT,
+                    format!("Steam is limiting sign-ins right now ({e}). IdleKit asks again in about 10 minutes."),
+                ));
+            }
+            Ok(Err(e)) => {
+                logbus::warn("web", format!("{who}: couldn't make a new web session ({e}, after {ms} ms)"));
+                return Err(failed(
+                    WEB_RETRY_AFTER_TROUBLE,
+                    format!("Couldn't get a web session from Steam right now ({e}). IdleKit tries again the next time one is needed."),
+                ));
+            }
+            Err(_) => {
+                let secs = WEB_RENEW_LIMIT.as_secs();
+                logbus::warn("web", format!("{who}: Steam didn't answer within {secs} s for a new web session"));
+                return Err(failed(
+                    WEB_RETRY_AFTER_TROUBLE,
+                    format!("Steam didn't answer within {secs} seconds for a new web session. IdleKit tries again the next time one is needed."),
+                ));
+            }
+        };
+        self.web_failures.lock().unwrap().remove(steam_id);
+        if jwt::decode(&token).is_none_or(|c| c.sub != steam_id) {
+            logbus::warn("web", format!("{who}: Steam's new web session is for a different account"));
+            bail!("Steam answered with a web session for a different account");
+        }
+        logbus::info("web", format!("{who}: new web session ready in {ms} ms ({})", good_for(&token)));
+        self.keep_web_token(steam_id, &token);
+        WebSession::from_access_token(steam_id, &token)
+    }
+
+    /// Whether Steam refused the account's saved sign-in during this run (and
+    /// no new one has been saved since).
+    pub fn sign_in_refused(&self, steam_id: &str) -> bool {
+        let Some(print) = self.refused_sign_ins.lock().unwrap().get(steam_id).copied() else { return false };
+        secrets::get(&secrets::refresh_token_key(steam_id)).is_some_and(|t| fingerprint(&t) == print)
+    }
+
+    /// Runs `work` with the account's web session. When Steam says the
+    /// session has ended (its page was shown to nobody signed in), the
+    /// session is dropped and `work` runs once more with a new one: a kept
+    /// session Steam stopped taking costs one extra page, not an error.
+    /// Only for work that is safe to repeat.
+    pub async fn with_web<T, F, Fut>(&self, steam_id: &str, work: F) -> Result<T>
+    where
+        F: Fn(Arc<WebSession>) -> Fut,
+        Fut: std::future::Future<Output = Result<T>>,
+    {
+        let ws = self.web_session(steam_id).await?;
+        match work(ws.clone()).await {
+            Err(e) if community::session_ended(&e) => {
+                logbus::info(
+                    "web",
+                    format!("{}: Steam no longer takes this web session; making a new one and trying again", logbus::label(steam_id)),
+                );
+                self.forget_failed_web_session(steam_id, &ws);
+                let ws = self.web_session(steam_id).await?;
+                work(ws).await
+            }
+            other => other,
+        }
+    }
+
+    /// After write work (listing, removing) failed because Steam says the
+    /// session ended: the next try gets a new one. Not repeated by itself.
+    pub fn web_failed(&self, steam_id: &str, ws: &WebSession, e: &anyhow::Error) {
+        if community::session_ended(e) {
+            logbus::info("web", format!("{}: Steam no longer takes this web session; the next try makes a new one", logbus::label(steam_id)));
+            self.forget_failed_web_session(steam_id, ws);
+        }
     }
 
     // ------------------------------------------------------------- games --
@@ -654,7 +861,7 @@ impl App {
     /// Persona name + avatar from the public profile XML (best effort).
     pub async fn fetch_profile(&self, steam_id: &str) {
         let url = format!("https://steamcommunity.com/profiles/{steam_id}/?xml=1");
-        let Ok(resp) = self.http.get(&url).send().await else { return };
+        let Ok(resp) = self.http.get(&url).logged().await else { return };
         let Ok(text) = resp.text().await else { return };
         // One pattern for the tags wanted, built once.
         static TAGS: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
@@ -733,5 +940,158 @@ mod tests {
         let name = |appid: u32| bare.iter().find(|g| g.appid == appid).unwrap().name.clone();
         assert_eq!([name(1030300), name(1044720), name(500)], ["App 1030300", "App 1044720", "App 500"]);
         assert!(App::unnamed("", 5) && App::unnamed(" App 5 ", 5) && !App::unnamed("App 6", 5) && !App::unnamed("Portal", 5));
+    }
+
+    // ------------------------------------------------- web session order --
+
+    use base64::Engine;
+
+    /// A token shaped like Steam's, for this account, good for `secs` more.
+    fn token(steam_id: &str, secs: i64, tag: &str) -> String {
+        let payload = format!(
+            r#"{{"iss":"r:{tag}","sub":"{steam_id}","aud":["web","renew","derive"],"exp":{}}}"#,
+            chrono::Utc::now().timestamp() + secs
+        );
+        format!("eyJhbGciOiJFZERTQSJ9.{}.sig", base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(payload))
+    }
+
+    /// An app on a folder of its own with one account on this PC, whose
+    /// connections to Steam go nowhere (a server list naming a closed port).
+    fn app_with(tag: &str, steam_id: &str) -> (App, PathBuf) {
+        let dir = std::env::temp_dir().join(format!("idlekit-web-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("pictures")).unwrap();
+        let servers = serde_json::json!({ "at": chrono::Utc::now().timestamp(), "tcp": ["127.0.0.1:9"], "ws": ["127.0.0.1:9"] });
+        std::fs::write(dir.join(crate::steam::cm::SERVERS_FILE), servers.to_string()).unwrap();
+        let app = App::new(dir.clone(), dir.join("pictures"));
+        app.update_config(|c| {
+            c.accounts.push(Account { steam_id: steam_id.into(), account_name: "someone".into(), mode: "local".into(), ..Default::default() })
+        });
+        (app, dir)
+    }
+
+    fn clean(steam_id: &str, dir: PathBuf) {
+        for key in [secrets::refresh_token_key(steam_id), secrets::web_token_key(steam_id), secrets::cookie_key(steam_id)] {
+            secrets::delete(&key);
+        }
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn the_web_session_carries_over_a_restart_without_asking_steam() {
+        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+        let sid = "76561197960265001";
+        let (app, dir) = app_with("restart", sid);
+        secrets::set(&secrets::refresh_token_key(sid), &token(sid, 200 * 86_400, "refresh")).unwrap();
+        // Signed in: the web sign-in that came with it is kept for the next start.
+        let web = token(sid, 20 * 3600, "web");
+        app.seed_web_session(sid, &web).await;
+        assert_eq!(secrets::get(&secrets::web_token_key(sid)).as_deref(), Some(web.as_str()));
+
+        // An update or a restart: a new app on the same folder. It uses the
+        // kept session at once; asking Steam could only have failed here.
+        drop(app);
+        let restarted = App::new(dir.clone(), dir.join("pictures"));
+        let started = Instant::now();
+        let ws = restarted.web_session(sid).await.expect("the kept session");
+        assert_eq!(ws.access_token, web);
+        assert!(started.elapsed() < Duration::from_millis(500), "took {:?}", started.elapsed());
+        // And from memory after that.
+        assert!(Arc::ptr_eq(&ws, &restarted.web_session(sid).await.unwrap()));
+        clean(sid, dir);
+    }
+
+    #[tokio::test]
+    async fn a_kept_session_about_to_run_out_is_dropped_and_a_new_one_asked_for_over_steams_servers() {
+        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+        let sid = "76561197960265002";
+        let (app, dir) = app_with("expiring", sid);
+        secrets::set(&secrets::refresh_token_key(sid), &token(sid, 200 * 86_400, "refresh")).unwrap();
+        secrets::set(&secrets::web_token_key(sid), &token(sid, 300, "web")).unwrap();
+        let started = Instant::now();
+        let e = app.web_session(sid).await.err().expect("an error").to_string();
+        // Steam's servers can't be reached here: trouble, to be tried again,
+        // never "sign in again", and never by HTTPS.
+        assert!(e.contains("Couldn't get a web session from Steam right now"), "{e}");
+        assert!(!e.contains("Sign in"), "{e}");
+        assert!(started.elapsed() < Duration::from_secs(10), "took {:?}", started.elapsed());
+        assert_eq!(secrets::get(&secrets::web_token_key(sid)), None, "the run-out session is gone");
+        assert!(app.refused_sign_ins.lock().unwrap().is_empty(), "trouble is not a refusal");
+        // Asked again at once (another page): the same answer, without a new try.
+        let tried_at = app.web_failures.lock().unwrap().get(sid).map(|f| f.at).expect("the failure is kept");
+        let again = app.web_session(sid).await.err().expect("an error").to_string();
+        assert_eq!(again, e);
+        assert_eq!(app.web_failures.lock().unwrap().get(sid).map(|f| f.at), Some(tried_at), "Steam was asked again");
+        // A session for another account is never used either.
+        secrets::set(&secrets::web_token_key(sid), &token("76561197960265999", 20 * 3600, "web")).unwrap();
+        assert!(app.web_session(sid).await.is_err());
+        assert_eq!(secrets::get(&secrets::web_token_key(sid)), None);
+        clean(sid, dir);
+    }
+
+    #[tokio::test]
+    async fn a_sign_in_steam_refused_is_not_asked_about_again_until_a_new_one() {
+        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+        let sid = "76561197960265003";
+        let (app, dir) = app_with("refused", sid);
+        let refresh = token(sid, 200 * 86_400, "refresh");
+        secrets::set(&secrets::refresh_token_key(sid), &refresh).unwrap();
+        // As if Steam had refused this saved sign-in a moment ago.
+        app.refused_sign_ins.lock().unwrap().insert(sid.into(), fingerprint(&refresh));
+        let started = Instant::now();
+        let e = app.web_session(sid).await.err().expect("an error").to_string();
+        assert!(e.contains("refused this account's saved sign-in earlier"), "{e}");
+        assert!(started.elapsed() < Duration::from_millis(200), "Steam was asked again: {:?}", started.elapsed());
+        // A new sign-in is another one, and is tried.
+        secrets::set(&secrets::refresh_token_key(sid), &token(sid, 200 * 86_400, "refresh-2")).unwrap();
+        let e = app.web_session(sid).await.err().expect("an error").to_string();
+        assert!(e.contains("Couldn't get a web session from Steam right now"), "{e}");
+        clean(sid, dir);
+    }
+
+    #[tokio::test]
+    async fn work_steam_says_needs_a_new_session_runs_once_more_with_one() {
+        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+        let sid = "76561197960265004";
+        let (app, dir) = app_with("ended", sid);
+        // A pasted cookie: a new session can be made from it with no network.
+        let cookie = format!("{sid}%7C%7C{}", token(sid, 20 * 3600, "cookie"));
+        secrets::set(&secrets::cookie_key(sid), &cookie).unwrap();
+        let tries = std::sync::atomic::AtomicUsize::new(0);
+        let first = app.web_session(sid).await.unwrap();
+        let got = app
+            .with_web(sid, |ws| {
+                let n = tries.fetch_add(1, Ordering::SeqCst);
+                async move {
+                    if n == 0 {
+                        Err(anyhow::Error::new(community::SessionEnded))
+                    } else {
+                        Ok(ws)
+                    }
+                }
+            })
+            .await
+            .expect("the second try works");
+        assert_eq!(tries.load(Ordering::SeqCst), 2);
+        assert!(!Arc::ptr_eq(&first, &got), "a new session was made");
+        // Anything else is not repeated.
+        let once = std::sync::atomic::AtomicUsize::new(0);
+        let e = app
+            .with_web(sid, |_| {
+                once.fetch_add(1, Ordering::SeqCst);
+                async { Err::<(), _>(anyhow!("HTTP 500")) }
+            })
+            .await
+            .unwrap_err();
+        assert_eq!(once.load(Ordering::SeqCst), 1, "{e}");
+        clean(sid, dir);
+    }
+
+    #[test]
+    fn time_left_reads_as_words() {
+        assert_eq!(good_for(&token("1", 23 * 3600 + 100, "a")), "good for 23 h more");
+        assert_eq!(good_for(&token("1", 1800, "a")), "good for 30 min more");
+        assert_eq!(good_for(&token("1", -5, "a")), "already run out");
+        assert_ne!(fingerprint("a"), fingerprint("b"));
     }
 }

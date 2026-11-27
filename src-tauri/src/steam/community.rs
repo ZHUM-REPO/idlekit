@@ -1,6 +1,8 @@
 //! Signed-in Steam Community/Store web session (cookie-based) and the page
 //! scrapers built on it: badge pages (card drops), licenses (refund window),
 //! the games list fallback, and another player's achievement unlock times.
+use crate::logbus;
+use crate::net::Logged;
 use super::webapi::{OwnedGame, UA_BROWSER};
 use anyhow::{anyhow, bail, Context, Result};
 use chrono::{Datelike, NaiveDate, NaiveDateTime, NaiveTime};
@@ -183,18 +185,31 @@ impl WebSession {
     }
 
     async fn fetch_text(&self, url: &str, wait_when_busy: bool) -> Result<String> {
+        // The address as it may be written down: no query, no profile name.
+        let place = reqwest::Url::parse(url).map(|u| crate::net::place(&u)).unwrap_or_else(|_| "a Steam page".into());
         let mut delay = 4u64;
         let mut busy = 0;
         let mut dropped = 0;
         loop {
-            let resp = match self.client.get(url).send().await {
+            let resp = match self.client.get(url).logged().await {
                 Ok(resp) => resp,
                 Err(e) if dropped < NETWORK_RETRIES.len() && worth_another_try(&e) => {
-                    tokio::time::sleep(Duration::from_secs(NETWORK_RETRIES[dropped])).await;
+                    let wait = NETWORK_RETRIES[dropped];
+                    logbus::info(
+                        "net",
+                        format!("{place}: no answer ({}); trying again in {wait} s ({} of {})", crate::net::reason(&e), dropped + 1, NETWORK_RETRIES.len()),
+                    );
+                    tokio::time::sleep(Duration::from_secs(wait)).await;
                     dropped += 1;
                     continue;
                 }
-                Err(e) => return Err(anyhow::Error::new(e.without_url())).with_context(|| format!("GET {url}")),
+                Err(e) => {
+                    let why = crate::net::reason(&e);
+                    if dropped > 0 {
+                        logbus::warn("net", format!("{place}: still no answer after {} more tries ({why}); giving up", dropped));
+                    }
+                    return Err(anyhow::Error::new(e.without_url())).with_context(|| format!("GET {place}"));
+                }
             };
             let status = resp.status();
             if status.as_u16() == 429 || status.is_server_error() {
@@ -202,24 +217,34 @@ impl WebSession {
                     return Err(SteamBusy(status.as_u16()).into());
                 }
                 if busy == 3 {
+                    logbus::warn("net", format!("{place}: Steam still answers HTTP {} after 3 pauses; giving up", status.as_u16()));
                     bail!("Steam is rate-limiting requests (HTTP {status}); try again later");
                 }
                 busy += 1;
+                logbus::info(
+                    "net",
+                    format!("{place}: Steam answered HTTP {}; waiting {delay} s before trying again ({busy} of 3)", status.as_u16()),
+                );
                 tokio::time::sleep(Duration::from_secs(delay)).await;
                 delay *= 3;
                 continue;
             }
             if !status.is_success() {
-                return Err(anyhow!("HTTP {status}")).with_context(|| format!("GET {url}"));
+                return Err(anyhow!("HTTP {status}")).with_context(|| format!("GET {place}"));
             }
             match resp.text().await {
                 Ok(text) => return Ok(text),
                 // Cut off half way through: the same as never answered.
                 Err(e) if dropped < NETWORK_RETRIES.len() && worth_another_try(&e) => {
-                    tokio::time::sleep(Duration::from_secs(NETWORK_RETRIES[dropped])).await;
+                    let wait = NETWORK_RETRIES[dropped];
+                    logbus::info(
+                        "net",
+                        format!("{place}: the answer was cut off ({}); trying again in {wait} s ({} of {})", crate::net::reason(&e), dropped + 1, NETWORK_RETRIES.len()),
+                    );
+                    tokio::time::sleep(Duration::from_secs(wait)).await;
                     dropped += 1;
                 }
-                Err(e) => return Err(anyhow::Error::new(e.without_url())).with_context(|| format!("GET {url}")),
+                Err(e) => return Err(anyhow::Error::new(e.without_url())).with_context(|| format!("GET {place}")),
             }
         }
     }
@@ -309,7 +334,8 @@ impl WebSession {
         match shown_to(&html) {
             ShownTo::Account(id) if id == self.steam_id => Ok(()),
             ShownTo::Account(other) => bail!("This cookie belongs to a different account ({other})"),
-            ShownTo::NobodySignedIn => bail!("Steam did not accept this session"),
+            // Shown to nobody: the session has ended, and a new one may help.
+            ShownTo::NobodySignedIn => Err(SessionEnded.into()),
             ShownTo::Unknown => bail!("Steam sent a page IdleKit doesn't recognize (it may be down for maintenance); try again in a while"),
         }
     }
@@ -334,9 +360,11 @@ pub async fn profile_unlock_times(
 ) -> Result<Vec<(String, i64)>> {
     let base = profile_base_url(profile)?;
     let url = format!("{base}/stats/{appid}/achievements/?l=english");
-    let resp = http.get(&url).send().await?;
+    let resp = http.get(&url).logged().await?;
     if !resp.status().is_success() {
-        bail!("HTTP {} loading {url}", resp.status());
+        // The profile's address is someone else's: only its place is named.
+        let place = reqwest::Url::parse(&url).map(|u| crate::net::place(&u)).unwrap_or_default();
+        bail!("HTTP {} loading {place}", resp.status());
     }
     let html = resp.text().await?;
     let list = parse_profile_achievements(&html, chrono::Local::now().year());

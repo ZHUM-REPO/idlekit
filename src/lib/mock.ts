@@ -237,6 +237,8 @@ export function createMock() {
       autoIdle: [730, 440],
       unlockQueue: [646570, 367520],
       farmBlacklist: [570],
+      // ?refused=1: as if Steam had refused this account's saved sign-in.
+      signInRefused: params.get("refused") === "1",
     }),
     account({ steamId: ALT, accountName: "cardfarm_alt", personaName: "Alt farm", mode: "direct" }),
   ];

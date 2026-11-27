@@ -21,6 +21,13 @@ pub fn cookie_key(steam_id: &str) -> String {
     format!("cookie:{steam_id}")
 }
 
+/// The web sign-in (an access token, good for about a day) last made for
+/// an account. Kept so that a restart or an update needs nothing from Steam
+/// while it is good, instead of asking for a new one at every start.
+pub fn web_token_key(steam_id: &str) -> String {
+    format!("web:{steam_id}")
+}
+
 pub fn guard_key(account_name: &str) -> String {
     format!("guard:{}", account_name.to_lowercase())
 }

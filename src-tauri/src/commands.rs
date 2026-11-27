@@ -9,7 +9,7 @@ use crate::secrets;
 use crate::state::{App, GameEntry};
 use crate::steam::art::GameArt;
 use crate::steam::auth::SignedIn;
-use crate::steam::cm::CmStatus;
+use crate::steam::cm::{self, CmStatus};
 use crate::steam::community::{self, WebSession};
 use crate::steam::local::LocalSteam;
 use crate::steam::market::{self, InvItem, Listing, PriceInfo, SellOutcome};
@@ -48,6 +48,8 @@ pub struct AccountView {
     pub has_token: bool,
     pub has_cookie: bool,
     pub local_active: bool,
+    /// Steam refused the saved sign-in during this run: signing in again is the only way back.
+    pub sign_in_refused: bool,
 }
 
 #[derive(Serialize)]
@@ -69,6 +71,9 @@ pub struct Bootstrap {
     pub log_file: Option<String>,
     pub desktop: DesktopInfo,
     pub update: UpdateState,
+    /// The number of the moment this was read (see `logbus::emit`): events
+    /// numbered up to it are already in here.
+    pub seq: u64,
 }
 
 fn account_views(app: &App, local: &LocalSteam) -> Vec<AccountView> {
@@ -76,6 +81,7 @@ fn account_views(app: &App, local: &LocalSteam) -> Vec<AccountView> {
         .into_iter()
         .map(|a| AccountView {
             has_token: secrets::get(&secrets::refresh_token_key(&a.steam_id)).is_some(),
+            sign_in_refused: app.sign_in_refused(&a.steam_id),
             has_cookie: secrets::get(&secrets::cookie_key(&a.steam_id)).is_some(),
             local_active: local.active_steam_id.as_deref() == Some(a.steam_id.as_str()),
             account: a,
@@ -85,6 +91,8 @@ fn account_views(app: &App, local: &LocalSteam) -> Vec<AccountView> {
 
 #[tauri::command]
 pub async fn get_bootstrap(app: State<'_, App>, handle: AppHandle) -> CmdResult<Bootstrap> {
+    // Taken first: every status read below is at least as new as this number.
+    let (seq, logs) = logbus::snapshot();
     let local = app.local_steam();
     let (settings, active_account) = app.with_config(|c| (c.settings.clone(), c.active_account.clone()));
     Ok(Bootstrap {
@@ -99,10 +107,11 @@ pub async fn get_bootstrap(app: State<'_, App>, handle: AppHandle) -> CmdResult<
         idle: app.idler.all(),
         farming: app.farming.all(),
         unlocker: app.unlocker.all(),
-        logs: logbus::recent(),
+        logs,
         log_file: logbus::file_path().map(|p| p.display().to_string()),
         desktop: desktop::info(&handle),
         update: updates::snapshot(&app, &handle),
+        seq,
     })
 }
 
@@ -229,12 +238,27 @@ fn on_signed_in(app: App, mode: String) -> impl FnOnce(SignedIn) -> futures_util
             if done.steam_id.is_empty() || done.refresh_token.is_empty() {
                 anyhow::bail!("Steam did not return a usable sign-in token");
             }
+            let who = logbus::label(&done.steam_id);
             secrets::set(&secrets::refresh_token_key(&done.steam_id), &done.refresh_token)?;
             secrets::delete(&secrets::cookie_key(&done.steam_id));
             upsert_account(&app, &done.steam_id, &done.account_name, "", &mode);
             let account = app.account(&done.steam_id)?;
             app.forget_web_session(&done.steam_id).await;
-            if let Some(token) = &done.access_token {
+            // A web session right away, kept for the next start: a QR sign-in
+            // brings one; a password sign-in asks for one over its own
+            // connection, which is signed in already.
+            let web_token = match (&done.access_token, &done.connection) {
+                (Some(token), _) => Some(token.clone()),
+                (None, Some(conn)) => match cm::generate_web_token(conn, &done.steam_id, &done.refresh_token).await {
+                    Ok(token) => Some(token),
+                    Err(e) => {
+                        logbus::warn("web", format!("{who}: no web session yet ({e}); one is made when it is needed"));
+                        None
+                    }
+                },
+                (None, None) => None,
+            };
+            if let Some(token) = &web_token {
                 app.seed_web_session(&done.steam_id, token).await;
             }
             if account.mode == "direct" {
@@ -245,21 +269,27 @@ fn on_signed_in(app: App, mode: String) -> impl FnOnce(SignedIn) -> futures_util
                     None => {
                         let cm = app.cm.clone();
                         let sid = done.steam_id.clone();
+                        // How it went is written down by connect itself.
                         tokio::spawn(async move {
-                            if let Err(e) = cm.connect(&sid).await {
-                                logbus::warn("direct", format!("{}: {e:#}", logbus::label(&sid)));
-                            }
+                            let _ = cm.connect(&sid).await;
                         });
                     }
                 }
             } else if let Some(conn) = done.connection {
                 // Local accounts only needed the token; close the extra session.
                 use steam_vent::ConnectionTrait;
-                let _ = conn
-                    .send(steam_vent_proto_steam::steammessages_clientserver_login::CMsgClientLogOff::new())
-                    .await;
+                let off = steam_vent_proto_steam::steammessages_clientserver_login::CMsgClientLogOff::new();
+                match tokio::time::timeout(Duration::from_secs(10), conn.send(off)).await {
+                    Ok(Ok(())) => logbus::debug("accounts", format!("{who}: signed off the sign-in's own connection")),
+                    _ => logbus::debug("accounts", format!("{who}: closed the sign-in's own connection")),
+                }
             }
-            logbus::info("accounts", format!("Signed in: {}", logbus::label(&done.steam_id)));
+            let lasts = crate::steam::jwt::decode(&done.refresh_token)
+                .map(|c| (c.exp - chrono::Utc::now().timestamp()) / 86_400)
+                .filter(|days| *days > 0)
+                .map(|days| format!(" (the saved sign-in is good for {days} more days)"))
+                .unwrap_or_default();
+            logbus::info("accounts", format!("Signed in: {who}{lasts}"));
             app.emit_accounts();
             let a = app.clone();
             let sid = done.steam_id.clone();
@@ -897,8 +927,13 @@ pub async fn unlock_stop(app: State<'_, App>, steam_id: String) -> CmdResult<()>
 
 #[tauri::command]
 pub async fn market_inventory(app: State<'_, App>, steam_id: String) -> CmdResult<Vec<InvItem>> {
-    let ws = app.web_session(&steam_id).await.map_err(anyhow_err)?;
-    market::inventory(&ws).await.map_err(anyhow_err)
+    let started = std::time::Instant::now();
+    let items = app.with_web(&steam_id, |ws| async move { market::inventory(&ws).await }).await.map_err(anyhow_err)?;
+    logbus::debug(
+        "market",
+        format!("Inventory of {}: {} item(s) in {} ms", logbus::label(&steam_id), items.len(), started.elapsed().as_millis()),
+    );
+    Ok(items)
 }
 
 #[derive(Serialize, Clone)]
@@ -1133,10 +1168,13 @@ pub async fn market_prices(
                 },
             };
             match (answer(market::order_book_by_name(ws, &name).await), number) {
-                (pricing::Answer::Failed(why), Some(id)) => match answer(market::order_book_by_id(ws, id, currency).await.map(Some)) {
-                    pricing::Answer::Failed(_) => pricing::Answer::Failed(why),
-                    other => other,
-                },
+                (pricing::Answer::Failed(why), Some(id)) => {
+                    logbus::debug("market", format!("{name}: the lookup by name failed ({why}); trying Steam's older lookup by number"));
+                    match answer(market::order_book_by_id(ws, id, currency).await.map(Some)) {
+                        pricing::Answer::Failed(_) => pricing::Answer::Failed(why),
+                        other => other,
+                    }
+                }
                 (other, _) => other,
             }
         }
@@ -1149,7 +1187,12 @@ pub async fn market_prices(
     let mut told_currency = false;
     let (mut answered, mut failed_from_start) = (false, 0usize);
     let mut first_problem = String::new();
+    let mut not_on_market: Vec<String> = Vec::new();
+    let mut paused_for = Duration::ZERO;
     let end = pricing::run(to_ask, pace, &mut pacer, stop, ask, |news| match news {
+        pricing::News::Again(name, why, next_try) => {
+            logbus::debug("market", format!("{name}: {why}; asking again later (try {next_try} of 3)"));
+        }
         pricing::News::Answered(name, answer) => {
             let info = match answer {
                 pricing::Answer::Book(book) => {
@@ -1178,6 +1221,8 @@ pub async fn market_prices(
                 pricing::Answer::NotOnMarket => {
                     answered = true;
                     unpriced += 1;
+                    not_on_market.push(name.to_string());
+                    logbus::debug("market", format!("{name}: Steam has no market for this item"));
                     no_price(name, &wallet, "Steam has no market for this item")
                 }
                 pricing::Answer::Failed(why) | pricing::Answer::Trouble(why) => {
@@ -1213,37 +1258,61 @@ pub async fn market_prices(
                 app.save_prices();
             }
         }
-        pricing::News::Pausing { pause, every: slower } => {
+        pricing::News::Pausing { pause, every: slower, cause } => {
             every = slower;
+            paused_for += pause;
             if since_saved > 0 {
                 since_saved = 0;
                 saved_at = std::time::Instant::now();
                 app.save_prices();
             }
+            let why = match cause {
+                pricing::Cause::TooMany => "Steam asked IdleKit to slow down",
+                pricing::Cause::Trouble => "Steam had trouble answering several times in a row",
+            };
             logbus::info(
                 "market",
                 format!(
-                    "Steam asked IdleKit to slow down: price checks wait {} s, then go on one every {:.1} s",
+                    "{why}: price checks wait {} s, then go on one every {:.1} s ({done} of {total} done)",
                     pause.as_secs(),
                     slower.as_secs_f64()
                 ),
             );
-            progress("prices", done, total, format!("Steam asked to slow down: waiting {} s", pause.as_secs()));
+            let short = match cause {
+                pricing::Cause::TooMany => "Steam asked to slow down",
+                pricing::Cause::Trouble => "Steam is having trouble",
+            };
+            progress("prices", done, total, format!("{short}: waiting {} s", pause.as_secs()));
         }
     })
     .await;
     // Saved before letting go, so the next run doesn't write the file at the same time.
     app.save_prices();
     drop(pacer);
-    let took = started.elapsed().as_secs();
-    let took = if took < 90 { format!("{took} s") } else { format!("{} min", took.div_ceil(60)) };
+    let took_secs = started.elapsed().as_secs_f64();
+    let took = if took_secs < 90.0 { format!("{took_secs:.0} s") } else { format!("{} min", (took_secs / 60.0).ceil()) };
+    if !not_on_market.is_empty() {
+        let shown: Vec<&str> = not_on_market.iter().take(10).map(String::as_str).collect();
+        let more = not_on_market.len().saturating_sub(shown.len());
+        logbus::info(
+            "market",
+            format!(
+                "No market on Steam for {} item(s): {}{}",
+                not_on_market.len(),
+                shown.join(", "),
+                if more > 0 { format!(" and {more} more") } else { String::new() }
+            ),
+        );
+    }
     match end {
         pricing::RunEnd::Done => {
             progress("prices", total, total, "Done");
+            let pauses = if paused_for.is_zero() { String::new() } else { format!(", {} s of it in pauses", paused_for.as_secs()) };
+            let each = if done > 0 { format!(", {:.1} s per item", took_secs / done as f64) } else { String::new() };
             logbus::info(
                 "market",
                 format!(
-                    "Checked {total} price(s) in {took}{}",
+                    "Checked {total} price(s) in {took}{each}{pauses}{}",
                     if unpriced > 0 { format!("; {unpriced} item(s) got no price") } else { String::new() }
                 ),
             );
@@ -1264,11 +1333,13 @@ pub async fn market_prices(
                 logbus::debug("market", format!("A newer price check took over after {done} of {total}"));
             }
         }
-        pricing::RunEnd::GaveUp { left } => {
+        pricing::RunEnd::GaveUp { left, cause } => {
             progress("prices", total, total, "Stopped");
-            let why = format!(
-                "Steam kept asking IdleKit to slow down, so {left} price(s) weren't checked. Try Refresh prices in a few minutes"
-            );
+            let kept = match cause {
+                pricing::Cause::TooMany => "Steam kept asking IdleKit to slow down",
+                pricing::Cause::Trouble => "Steam kept having trouble answering",
+            };
+            let why = format!("{kept}, so {left} price(s) weren't checked after {took}. Try Refresh prices in a few minutes");
             logbus::warn("market", &why);
             return Err(why);
         }
@@ -1291,6 +1362,7 @@ pub async fn market_sell(app: State<'_, App>, steam_id: String, items: Vec<SellR
     app.price_runs.fetch_add(1, Ordering::SeqCst);
     app.market_cancel.store(false, Ordering::SeqCst);
     let _job = app.market_job();
+    let started = std::time::Instant::now();
     let ws = app.web_session(&steam_id).await.map_err(anyhow_err)?;
     let delay = app.settings().market.delay_ms.max(500);
     let (wallet, _) = market_wallet(&app, &ws, &steam_id).await;
@@ -1309,20 +1381,27 @@ pub async fn market_sell(app: State<'_, App>, steam_id: String, items: Vec<SellR
                 break 'outer;
             }
             progress("sell", done, total, format!("Listing {}", item.market_hash_name));
-            let r = market::sell(&ws, asset, seller).await.unwrap_or_else(|e| SellOutcome {
-                asset_id: asset.clone(),
-                ok: false,
-                needs_confirmation: false,
-                message: format!("{e:#}"),
+            let mut ended = false;
+            let r = market::sell(&ws, asset, seller).await.unwrap_or_else(|e| {
+                ended = community::session_ended(&e);
+                app.web_failed(&steam_id, &ws, &e);
+                SellOutcome { asset_id: asset.clone(), ok: false, needs_confirmation: false, message: format!("{e:#}") }
             });
             if r.needs_confirmation {
                 pending_confirmations += 1;
             }
-            if !r.ok {
+            if r.ok {
+                logbus::debug("market", format!("{}: listed{}", item.market_hash_name, if r.needs_confirmation { ", to confirm in the Steam mobile app" } else { "" }));
+            } else {
                 logbus::warn("market", format!("{}: {}", item.market_hash_name, r.message));
             }
             out.push(r);
             done += 1;
+            if ended {
+                // Every listing after this one would fail the same way.
+                logbus::warn("market", "Stopped listing: Steam no longer takes this web session. Try again: a new one is made");
+                break 'outer;
+            }
             if done < total {
                 tokio::time::sleep(Duration::from_millis(delay)).await;
             }
@@ -1332,7 +1411,7 @@ pub async fn market_sell(app: State<'_, App>, steam_id: String, items: Vec<SellR
     let ok = out.iter().filter(|o| o.ok).count();
     logbus::info(
         "market",
-        format!("Listed {ok} item(s){}", if pending_confirmations > 0 {
+        format!("Listed {ok} of {total} item(s) in {} s{}", started.elapsed().as_secs(), if pending_confirmations > 0 {
             format!("; {pending_confirmations} need confirming in the Steam mobile app")
         } else {
             String::new()
@@ -1343,8 +1422,13 @@ pub async fn market_sell(app: State<'_, App>, steam_id: String, items: Vec<SellR
 
 #[tauri::command]
 pub async fn market_listings(app: State<'_, App>, steam_id: String) -> CmdResult<Vec<Listing>> {
-    let ws = app.web_session(&steam_id).await.map_err(anyhow_err)?;
-    market::my_listings(&ws).await.map_err(anyhow_err)
+    let started = std::time::Instant::now();
+    let listings = app.with_web(&steam_id, |ws| async move { market::my_listings(&ws).await }).await.map_err(anyhow_err)?;
+    logbus::debug(
+        "market",
+        format!("Listings of {}: {} in {} ms", logbus::label(&steam_id), listings.len(), started.elapsed().as_millis()),
+    );
+    Ok(listings)
 }
 
 #[tauri::command]
@@ -1352,31 +1436,44 @@ pub async fn market_remove(app: State<'_, App>, steam_id: String, listing_ids: V
     app.price_runs.fetch_add(1, Ordering::SeqCst);
     app.market_cancel.store(false, Ordering::SeqCst);
     let _job = app.market_job();
+    let started = std::time::Instant::now();
     let ws = app.web_session(&steam_id).await.map_err(anyhow_err)?;
     let delay = app.settings().market.delay_ms.max(500);
     let total = listing_ids.len();
     let mut removed = 0;
     for (i, id) in listing_ids.iter().enumerate() {
         if app.market_cancel.load(Ordering::SeqCst) {
+            logbus::info("market", format!("Removing listings cancelled after {i} of {total}"));
             break;
         }
         progress("remove", i, total, format!("Removing listing {id}"));
         match market::remove_listing(&ws, id).await {
-            Ok(()) => removed += 1,
-            Err(e) => logbus::warn("market", format!("{e:#}")),
+            Ok(()) => {
+                removed += 1;
+                logbus::debug("market", format!("Removed listing {id}"));
+            }
+            Err(e) => {
+                logbus::warn("market", format!("{e:#}"));
+                if community::session_ended(&e) {
+                    app.web_failed(&steam_id, &ws, &e);
+                    logbus::warn("market", "Stopped removing: Steam no longer takes this web session. Try again: a new one is made");
+                    break;
+                }
+            }
         }
         if i + 1 < total {
             tokio::time::sleep(Duration::from_millis(delay)).await;
         }
     }
     progress("remove", total, total, "Done");
+    logbus::info("market", format!("Removed {removed} of {total} listing(s) in {} s", started.elapsed().as_secs()));
     Ok(removed)
 }
 
 #[tauri::command]
 pub async fn web_check(app: State<'_, App>, steam_id: String) -> CmdResult<String> {
-    let ws = app.web_session(&steam_id).await.map_err(err)?;
-    ws.verify().await.map_err(anyhow_err)?;
+    app.with_web(&steam_id, |ws| async move { ws.verify().await }).await.map_err(anyhow_err)?;
+    logbus::info("web", format!("{}: Steam accepts the web session", logbus::label(&steam_id)));
     Ok("Web session OK".into())
 }
 

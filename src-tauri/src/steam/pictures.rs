@@ -6,6 +6,7 @@
 //! of the address it came from. That is how a picture that has since changed
 //! at the source (a new avatar) is told apart from the copy on disk.
 use crate::logbus;
+use crate::net::Logged;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -352,7 +353,7 @@ impl Pictures {
     /// the host's answer (`true`: it has no such picture) or only trouble
     /// reaching it (`false`).
     async fn download(&self, http: &reqwest::Client, url: &str) -> Result<Vec<u8>, (String, bool)> {
-        let resp = http.get(url).timeout(TIMEOUT).send().await.map_err(|e| (e.without_url().to_string(), false))?;
+        let resp = http.get(url).timeout(TIMEOUT).logged().await.map_err(|e| (e.without_url().to_string(), false))?;
         let status = resp.status();
         if !status.is_success() {
             // 404 and its relatives are an answer; a 429 or a 5xx is trouble.

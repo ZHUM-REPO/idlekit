@@ -10,12 +10,15 @@ use std::collections::VecDeque;
 use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use tauri::{AppHandle, Emitter};
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LogLine {
+    /// Where the line comes in the order of everything sent to the window (see [`emit`]).
+    pub seq: u64,
     pub ts: i64,
     pub level: &'static str,
     pub scope: String,
@@ -23,6 +26,11 @@ pub struct LogLine {
 }
 
 static APP: OnceLock<AppHandle> = OnceLock::new();
+/// Numbers everything sent to the window, in the order it happens. The
+/// window takes its first look at the app's state with the number of that
+/// moment and keeps only what came after it, so nothing that happens while
+/// it starts is missed (a status that changed meanwhile) or applied twice.
+static SEQ: AtomicU64 = AtomicU64::new(0);
 static BUF: Mutex<VecDeque<LogLine>> = Mutex::new(VecDeque::new());
 static FILE: Mutex<Option<LogFile>> = Mutex::new(None);
 /// Words to keep out of the log that no pattern can recognise, such as a
@@ -46,16 +54,40 @@ pub const FILE_NAME: &str = "log.txt";
 const OLD_FILE_NAME: &str = "log.old.txt";
 /// log.txt is set aside as log.old.txt when it reaches this size, so the two
 /// together never take more than twice this.
-const MAX_FILE_BYTES: u64 = 2 * 1024 * 1024;
+const MAX_FILE_BYTES: u64 = 4 * 1024 * 1024;
 const MAX_MESSAGE_CHARS: usize = 4000;
 
 pub fn init(app: AppHandle) {
     let _ = APP.set(app);
 }
 
+fn next_seq() -> u64 {
+    SEQ.fetch_add(1, Ordering::SeqCst) + 1
+}
+
+/// Sends an event to the window. One that carries an object gets the next
+/// number in `seq` (see [`SEQ`]), taken after the change it reports.
 pub fn emit<S: Serialize + Clone>(event: &str, payload: S) {
-    if let Some(app) = APP.get() {
-        let _ = app.emit(event, payload);
+    let Some(app) = APP.get() else { return };
+    match serde_json::to_value(&payload) {
+        Ok(serde_json::Value::Object(mut map)) => {
+            if !map.contains_key("seq") {
+                map.insert("seq".into(), next_seq().into());
+            }
+            let _ = app.emit(event, serde_json::Value::Object(map));
+        }
+        _ => {
+            let _ = app.emit(event, payload);
+        }
+    }
+}
+
+/// The lines in memory and the number of this moment, read together: every
+/// line numbered up to it is among them, none after it.
+pub fn snapshot() -> (u64, Vec<LogLine>) {
+    match BUF.lock() {
+        Ok(b) => (SEQ.load(Ordering::SeqCst), b.iter().cloned().collect()),
+        Err(_) => (SEQ.load(Ordering::SeqCst), Vec::new()),
     }
 }
 
@@ -414,7 +446,8 @@ fn push(level: &'static str, scope: &str, message: String) {
     if message.chars().count() > MAX_MESSAGE_CHARS {
         message = message.chars().take(MAX_MESSAGE_CHARS).collect::<String>() + " … (cut short)";
     }
-    let line = LogLine {
+    let mut line = LogLine {
+        seq: 0,
         ts: chrono::Utc::now().timestamp_millis(),
         level,
         scope: scope.to_string(),
@@ -424,11 +457,16 @@ fn push(level: &'static str, scope: &str, message: String) {
     {
         // The file's lock is taken first and held over both steps (see open_file).
         let mut file = FILE.lock().ok();
-        if let Ok(mut buf) = BUF.lock() {
-            if buf.len() >= MAX_LINES {
-                buf.pop_front();
+        // Numbered under the lock, so a snapshot holds exactly the lines up to its number.
+        match BUF.lock() {
+            Ok(mut buf) => {
+                line.seq = next_seq();
+                if buf.len() >= MAX_LINES {
+                    buf.pop_front();
+                }
+                buf.push_back(line.clone());
             }
-            buf.push_back(line.clone());
+            Err(_) => line.seq = next_seq(),
         }
         if let Some(file) = file.as_mut().and_then(|f| f.as_mut()) {
             file.write(&format_line(&line));
@@ -615,7 +653,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("idlekit-log-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        let line = LogLine { ts: 1_795_000_000_123, level: "warn", scope: "idle".into(), message: "first\nsecond".into() };
+        let line = LogLine { seq: 1, ts: 1_795_000_000_123, level: "warn", scope: "idle".into(), message: "first\nsecond".into() };
         assert_eq!(format_line(&line), "2026-11-18 11:06:40.123Z  warn   idle       first\n        second\n");
 
         let mut log = LogFile::open(&dir).unwrap();

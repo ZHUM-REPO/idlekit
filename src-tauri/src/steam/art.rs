@@ -13,6 +13,7 @@
 //! "Hide NSFW games" setting goes by, and what the game is called, which
 //! names the games that Steam's files on this PC list by number only.
 use crate::logbus;
+use crate::net::Logged;
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -225,7 +226,7 @@ impl ArtResolver {
             .get(format!("{}/IStoreBrowseService/GetItems/v1/", self.api))
             .query(&[("input_json", input.to_string())])
             .timeout(TIMEOUT)
-            .send()
+            .logged()
             .await
             // The URL lists every requested id, which would swamp the log line.
             .map_err(reqwest::Error::without_url)

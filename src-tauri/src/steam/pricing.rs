@@ -199,8 +199,18 @@ pub enum RunEnd {
     Done,
     /// Stopped from outside: cancelled, or a newer run took over.
     Stopped,
-    /// Steam kept saying "too many requests"; this many items weren't priced.
-    GaveUp { left: usize },
+    /// Steam kept saying "too many requests", or kept having trouble
+    /// answering (`cause`); this many items weren't priced.
+    GaveUp { left: usize, cause: Cause },
+}
+
+/// Why a run pauses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Cause {
+    /// Steam answered "too many requests" (HTTP 429).
+    TooMany,
+    /// Steam had trouble answering (a 5xx, or no answer at all), several times in a row.
+    Trouble,
 }
 
 /// What a run tells its caller as it goes.
@@ -208,8 +218,11 @@ pub enum RunEnd {
 pub enum News<'a> {
     /// An item's last word: a book, not on the market, or failed.
     Answered(&'a str, Answer),
-    /// Steam asked for a pause: how long it is, and the pace after it.
-    Pausing { pause: Duration, every: Duration },
+    /// An item Steam had trouble with goes to the back of the line, to be
+    /// asked again: why, and which try comes next.
+    Again(&'a str, &'a str, u8),
+    /// A pause: how long it is, the pace after it, and why.
+    Pausing { pause: Duration, every: Duration, cause: Cause },
 }
 
 /// Asks about every item in `names`, first to last, at `pace`, and tells
@@ -287,14 +300,15 @@ where
                 refused = 1;
                 pauses += 1;
                 if pauses > PAUSES_BEFORE_GIVING_UP {
-                    return RunEnd::GaveUp { left: queue.len() + asking.len() };
+                    return RunEnd::GaveUp { left: queue.len() + asking.len(), cause: Cause::TooMany };
                 }
                 let pause = take_a_pause(pacer, &mut every);
                 pause_began = Some(Instant::now());
-                news(News::Pausing { pause, every });
+                news(News::Pausing { pause, every, cause: Cause::TooMany });
             }
             Answer::Trouble(why) => {
                 if tries + 1 < TRIES {
+                    news(News::Again(&name, &why, tries + 2));
                     queue.push_back((name, tries + 1));
                 } else {
                     news(News::Answered(&name, Answer::Failed(why)));
@@ -305,11 +319,11 @@ where
                     refused = 0;
                     pauses += 1;
                     if pauses > PAUSES_BEFORE_GIVING_UP {
-                        return RunEnd::GaveUp { left: queue.len() + asking.len() };
+                        return RunEnd::GaveUp { left: queue.len() + asking.len(), cause: Cause::Trouble };
                     }
                     let pause = take_a_pause(pacer, &mut every);
                     pause_began = Some(Instant::now());
-                    news(News::Pausing { pause, every });
+                    news(News::Pausing { pause, every, cause: Cause::Trouble });
                 }
             }
             answer => {
@@ -398,7 +412,8 @@ mod tests {
             },
             |news| match news {
                 News::Answered(name, answer) => seen.borrow_mut().answered.push((name.to_string(), answer)),
-                News::Pausing { pause, every } => seen.borrow_mut().pauses.push((pause, every)),
+                News::Pausing { pause, every, .. } => seen.borrow_mut().pauses.push((pause, every)),
+                News::Again(..) => {}
             },
         )
         .await;
@@ -480,7 +495,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn a_run_gives_up_when_steam_keeps_refusing() {
         let (end, seen) = try_run(names(5), PACE, Duration::from_millis(300), |_, _| Answer::Busy, None).await;
-        assert_eq!(end, RunEnd::GaveUp { left: 5 });
+        assert_eq!(end, RunEnd::GaveUp { left: 5, cause: Cause::TooMany });
         // 20 + 40 + 80 + 160 s of pauses, each one longer, the pace slower.
         let pauses: Vec<u64> = seen.pauses.iter().map(|p| p.0.as_secs()).collect();
         assert_eq!(pauses, [20, 40, 80, 160]);

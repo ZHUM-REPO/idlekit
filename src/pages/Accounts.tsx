@@ -212,7 +212,11 @@ function AccountRow({ account: a, first, onWeb }: { account: Account; first: boo
         </div>
         <div className="flex flex-wrap items-center gap-2.5 text-[13px]">
           <span className="w-[84px] flex-none text-faint">Web session</span>
-          {a.hasToken ? (
+          {a.hasToken && a.signInRefused ? (
+            <Pill tone="bad" lamp>
+              Steam refused the saved sign-in
+            </Pill>
+          ) : a.hasToken ? (
             <Pill tone="ok" lamp>
               Signed in
             </Pill>
@@ -225,10 +229,10 @@ function AccountRow({ account: a, first, onWeb }: { account: Account; first: boo
               None
             </Pill>
           )}
-          <Button size="sm" onClick={onWeb}>
-            {a.hasToken || a.hasCookie ? "Change" : "Set up"}
+          <Button size="sm" variant={a.signInRefused ? "primary" : undefined} onClick={onWeb}>
+            {a.signInRefused ? "Sign in again" : a.hasToken || a.hasCookie ? "Change" : "Set up"}
           </Button>
-          {(a.hasToken || a.hasCookie) && (
+          {(a.hasToken || a.hasCookie) && !a.signInRefused && (
             <Button
               size="sm"
               variant="ghost"

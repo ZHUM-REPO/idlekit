@@ -4,6 +4,7 @@ mod config;
 mod desktop;
 mod features;
 mod logbus;
+mod net;
 mod secrets;
 mod state;
 mod steam;
@@ -16,6 +17,8 @@ use std::time::{Duration, Instant};
 use tauri::{AppHandle, Manager};
 
 /// How long auto-idle and farm-on-launch wait for Steam before giving up.
+/// The longest direct accounts wait at startup for the look for a newer version.
+const LOOK_FIRST: Duration = Duration::from_secs(10);
 const STARTUP_WAIT: Duration = Duration::from_secs(5 * 60);
 const STARTUP_POLL: Duration = Duration::from_secs(5);
 /// How long the Steam client may stay signed in to a different account
@@ -130,9 +133,10 @@ async fn startup(app: App, handle: AppHandle) {
     let s = cfg.settings.clone();
     logbus::info("app", format!("IdleKit {} started", updates::shown(env!("CARGO_PKG_VERSION"))));
     // With "install updates by itself" on, the first look for a newer version
-    // runs while the accounts below wait for Steam, and nothing is started
-    // before it is over: a newer version is still installed while nothing
-    // runs, without the wait adding to the time it takes Steam to come up.
+    // comes before anything is started: a newer version is installed while
+    // nothing runs. Direct accounts connect once it is over too (it takes
+    // about a second; never more than 10 s of waiting): a connection made
+    // just before an update installs is only signed off again at once.
     // Then it keeps looking every half hour for as long as IdleKit runs,
     // whenever "look for updates" is on.
     let (looked, look_over) = tokio::sync::watch::channel(false);
@@ -179,9 +183,11 @@ async fn startup(app: App, handle: AppHandle) {
         let (app, account, mut look_over) = (app.clone(), a.clone(), look_over.clone());
         tokio::spawn(async move {
             if connect {
-                if let Err(e) = app.cm.connect(&account.steam_id).await {
-                    logbus::warn("direct", format!("{}: {e:#}", logbus::label(&account.steam_id)));
+                if tokio::time::timeout(LOOK_FIRST, look_over.wait_for(|over| *over)).await.is_err() {
+                    logbus::debug("direct", "The look for a newer version is taking long; connecting without waiting for it");
                 }
+                // How it went is written down by connect itself.
+                let _ = app.cm.connect(&account.steam_id).await;
             }
             if !(auto_idle || farm) {
                 return;

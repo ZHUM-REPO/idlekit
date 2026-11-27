@@ -102,6 +102,8 @@ export interface Account {
   hasToken: boolean;
   hasCookie: boolean;
   localActive: boolean;
+  /** Steam refused the saved sign-in: only signing in again brings the web session back. */
+  signInRefused?: boolean;
 }
 
 export interface LocalUser {
@@ -195,6 +197,8 @@ export interface UnlockStatus {
 export interface LogLine {
   /** Given by the window as the line arrives, so a row keeps its identity when the list moves up. */
   n?: number;
+  /** Where the line comes among everything the backend sent (see Bootstrap.seq). */
+  seq?: number;
   ts: number;
   level: "info" | "warn" | "error" | "debug";
   scope: string;
@@ -376,6 +380,8 @@ export interface Bootstrap {
   logFile: string | null;
   desktop: DesktopInfo;
   update: UpdateState;
+  /** The number of the moment this was read: events numbered up to it are in here already. */
+  seq?: number;
 }
 
 /** One of Steam's sales or fests, from Valve's schedule. */

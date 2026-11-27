@@ -5,6 +5,7 @@
 //! them, so this goes to Valve's own page.
 
 use crate::logbus;
+use crate::net::Logged;
 use anyhow::{anyhow, bail, Result};
 use chrono::{Datelike, NaiveDate, NaiveTime, Weekday};
 use scraper::{ElementRef, Html, Node};
@@ -67,7 +68,7 @@ pub struct EventList {
 /// Reads Valve's page. A page without a single date IdleKit can read counts
 /// as a failure, so a changed page never replaces a good list with nothing.
 pub async fn fetch(http: &reqwest::Client) -> Result<Vec<SteamEvent>> {
-    let resp = http.get(source()).header("Accept-Language", "en-US,en;q=0.8").send().await.map_err(|e| {
+    let resp = http.get(source()).header("Accept-Language", "en-US,en;q=0.8").logged().await.map_err(|e| {
         anyhow!(if e.is_timeout() { "Valve's page didn't answer in time" } else { "Valve's page couldn't be reached" })
     })?;
     if !resp.status().is_success() {
