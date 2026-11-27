@@ -1,6 +1,6 @@
 [package]
 name = "idlekit"
-version = "2.1.0"
+version = "2.2.0"
 description = "Steam idler: card farming, achievement manager, playtime booster and market seller"
 edition = "2021"
 default-run = "idlekit"
@@ -38,6 +38,10 @@ anyhow = "1"
 tracing = "0.1"
 urlencoding = "2"
 dirs = "6"
+
+[dev-dependencies]
+# Tests that run the clock forward instead of waiting.
+tokio = { version = "1", features = ["full", "test-util"] }
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.56"

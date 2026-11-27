@@ -92,7 +92,10 @@ export const ACTIONS: Record<string, Action> = {
   unlock_stop: { label: "Stop the achievement unlocker", detail: account },
 
   market_inventory: { label: "Load the inventory", detail: account },
-  market_prices: { label: "Get market prices", detail: (a) => `${count(a.hashNames)} item(s)` },
+  market_prices: {
+    label: "Get market prices",
+    detail: (a) => `${count(a.hashNames)} item(s)${count(a.recheck) ? `, ${count(a.recheck)} checked again` : ""}`,
+  },
   market_sell: {
     label: "List items on the market",
     detail: (a) => {

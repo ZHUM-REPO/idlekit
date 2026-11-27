@@ -2,6 +2,15 @@
 
 The section for the version being released becomes the text of its release page.
 
+## 2.2
+
+- **Prices check by themselves.** Opening the Market's Inventory tab checks the prices of every marketable item, with no need to select them first: the ones the table shows come first, and each price shows as soon as it arrives instead of all at the end. Items waiting for theirs show "…", and hovering over a price shows when it was checked, or why there is none. A search, filter or sort made while the check goes on moves the items it shows to the front. **Refresh prices** checks again the items selected, or every item shown when none are.
+- **Checking prices is much faster, and works with Steam's new market.** Steam's market changed in November 2026, and the old way of finding an item's order book stopped working for items IdleKit hadn't priced before. Each item now takes one small request instead of a page download and a second request, and a slow answer no longer holds up the next one: a new request starts on time, with up to three waiting for their answers. When Steam asks IdleKit to slow down, every request waits, then carries on at a slower pace, instead of failing.
+- **Prices are kept for an hour**, also across restarts, so opening the Market again shows them at once without asking Steam. While the Market stays open, they're checked again once they're an hour old. When a check stops halfway (you listed items, or Steam asked to wait), it carries on by itself; Cancel stops it until you refresh or reload the inventory.
+- **Sort the inventory by any number in it.** Click the head of Owned, Sell, Lowest listing, Highest offer, Buyer pays or You receive to sort from lowest to highest, again for highest to lowest, and a third time to go back to the inventory's order. Items with nothing in that column go last. The sort is kept after a restart, and a row you're typing in stays where it is until you're done.
+- **Prices in your wallet's currency with Steam's new market page.** IdleKit now reads the currency from the page's new layout as well as the old one. A changed pricing step or limit in Settings now shows in the table straight away.
+- Removing listings reloads the inventory too, since the items go back into it.
+
 ## 2.1
 
 - **Upcoming Events asks Valve's page once at startup.** When the page couldn't be reached, IdleKit asked for it twice in a row as it started, and wrote two warnings. Now the list it already has shows at once and the page is asked for once. When the same failure comes back an hour later, it's noted quietly instead of as a new warning.

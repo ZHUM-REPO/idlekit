@@ -4,6 +4,7 @@ use crate::config::{Account, Config};
 use crate::features::{farming::FarmingManager, idler::Idler, unlocker::UnlockerManager};
 use crate::steam::community::WebSession;
 use crate::steam::events::{self, EventList};
+use crate::steam::pricing::{self, PriceList};
 use crate::steam::webapi::{self, OwnedGame};
 use crate::steam::{art::ArtResolver, auth::AuthSessions, cm::CmManager, helper::HelperManager, jwt, local, pictures::Pictures};
 use crate::{logbus, secrets};
@@ -12,7 +13,7 @@ use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 use std::ops::Deref;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -75,6 +76,14 @@ pub struct Inner {
     pub market_cancel: AtomicBool,
     /// How many market jobs (pricing, listing, removing) are under way.
     pub market_busy: AtomicUsize,
+    /// Which request for prices is the latest: one under way stops when it
+    /// sees a newer one, or a listing job, start.
+    pub price_runs: AtomicU64,
+    /// The pace of price checks. The run that is asking Steam holds it; the
+    /// next one waits its turn.
+    pub price_pacer: tokio::sync::Mutex<pricing::Pacer>,
+    /// The market's prices as last seen, read from disk when first needed.
+    prices: Mutex<Option<PriceList>>,
 }
 
 fn hide_account_names(cfg: &Config) {
@@ -124,7 +133,29 @@ impl App {
             ach_percents: Mutex::new(HashMap::new()),
             market_cancel: AtomicBool::new(false),
             market_busy: AtomicUsize::new(0),
+            price_runs: AtomicU64::new(0),
+            price_pacer: tokio::sync::Mutex::new(pricing::Pacer::default()),
+            prices: Mutex::new(None),
         }))
+    }
+
+    // ------------------------------------------------------- market prices --
+
+    /// The prices kept from earlier checks, read from disk the first time.
+    pub fn with_prices<R>(&self, f: impl FnOnce(&mut PriceList) -> R) -> R {
+        let mut kept = self.prices.lock().unwrap();
+        let list = kept.get_or_insert_with(|| {
+            PriceList::load(&self.data_dir.join(pricing::FILE), chrono::Utc::now().timestamp_millis())
+        });
+        f(list)
+    }
+
+    /// Writes the kept prices to disk.
+    pub fn save_prices(&self) {
+        let bytes = self.with_prices(|list| list.to_bytes());
+        if let Err(e) = PriceList::save(&bytes, &self.data_dir.join(pricing::FILE)) {
+            logbus::warn("market", format!("Couldn't keep the prices on disk: {e:#}"));
+        }
     }
 
     // ------------------------------------------------------------ config --

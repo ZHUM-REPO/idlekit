@@ -21,6 +21,7 @@ import type {
   LogLine,
   MarketProgress,
   PriceInfo,
+  PricesUpdate,
   SellOutcome,
   Settings,
   StartResult,
@@ -79,6 +80,8 @@ export interface EventMap {
   "unlock://status": UnlockStatus;
   "auth://status": AuthEvent;
   "market://progress": MarketProgress;
+  /** Prices as a price check learns them. */
+  "market://prices": PricesUpdate;
   "update://state": UpdateState;
   /** The close button was pressed and the app wants to know what to do. */
   "window://close-requested": null;
@@ -176,8 +179,9 @@ export const api = {
   unlockStop: (steamId: string) => call<void>("unlock_stop", { steamId }),
 
   inventory: (steamId: string) => call<InvItem[]>("market_inventory", { steamId }),
-  prices: (steamId: string, hashNames: string[]) =>
-    call<{ currency: number; wallet: Wallet; items: PriceInfo[] }>("market_prices", { steamId, hashNames }),
+  /** Prices of these items, in this order; the ones in `recheck` are asked about again even when checked lately. */
+  prices: (steamId: string, hashNames: string[], recheck: string[] = []) =>
+    call<{ currency: number; wallet: Wallet; items: PriceInfo[] }>("market_prices", { steamId, hashNames, recheck }),
   sell: (steamId: string, items: { marketHashName: string; assetIds: string[]; buyerCents: number }[]) =>
     call<SellOutcome[]>("market_sell", { steamId, items }),
   listings: (steamId: string) => call<Listing[]>("market_listings", { steamId }),

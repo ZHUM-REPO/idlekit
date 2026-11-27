@@ -85,6 +85,9 @@ pub struct ViewSettings {
     pub market_tab: String,
     /// Market inventory: which kind of item is shown.
     pub market_filter: String,
+    /// Market inventory: the column the items are sorted by, and which way
+    /// ("lowest-asc", "buyer-desc", …), or "none" for the inventory's order.
+    pub market_sort: String,
     /// Logs: which lines are shown.
     pub logs_level: String,
 }
@@ -96,6 +99,7 @@ impl Default for ViewSettings {
             library_sort: "name".into(),
             market_tab: "inventory".into(),
             market_filter: "all".into(),
+            market_sort: "none".into(),
             logs_level: "all".into(),
         }
     }

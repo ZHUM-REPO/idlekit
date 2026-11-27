@@ -26,6 +26,7 @@ pub mod kv_binary;
 pub mod local;
 pub mod market;
 pub mod pictures;
+pub mod pricing;
 pub mod schema;
 pub mod vdf;
 pub mod webapi;

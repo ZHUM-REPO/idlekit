@@ -3,7 +3,7 @@
 use super::community::WebSession;
 use anyhow::{anyhow, bail, Context, Result};
 use scraper::{Html, Selector};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::time::Duration;
@@ -27,7 +27,9 @@ pub struct InvItem {
 #[serde(rename_all = "camelCase")]
 pub struct PriceInfo {
     pub market_hash_name: String,
-    /// Prices are what the buyer pays, in the wallet currency's minor units.
+    /// The currency of every price here (Steam's id for it).
+    pub currency: u32,
+    /// Prices are what the buyer pays, in the currency's minor units.
     pub lowest_sell: Option<u32>,
     pub highest_buy: Option<u32>,
     pub sell_listings: u32,
@@ -35,6 +37,10 @@ pub struct PriceInfo {
     pub suggested: Option<u32>,
     /// What you receive after Steam's fees for `suggested`.
     pub you_receive: Option<u32>,
+    /// When Steam was asked, in milliseconds since 1970; 0 when it wasn't.
+    pub checked_at: i64,
+    /// Why there is no price, when Steam couldn't say.
+    pub problem: Option<String>,
 }
 
 #[derive(Serialize, Clone, Debug, Default)]
@@ -60,10 +66,11 @@ pub struct SellOutcome {
 // ----------------------------------------------------------------- fees ---
 
 /// How the market charges in the signed-in account's wallet currency. Steam
-/// publishes these numbers on the market page (`g_rgWalletInfo`) and its own
-/// sell dialog computes from them; the defaults are a US-dollar wallet's.
-/// Amounts are in the currency's minor units.
-#[derive(Serialize, Clone, Copy, Debug, PartialEq)]
+/// published these numbers on the market page (`g_rgWalletInfo`) and its own
+/// sell dialog computed from them; the market Steam opened in November 2026
+/// only says which currency, and whether its prices are whole units. The
+/// defaults are a US-dollar wallet's. Amounts are in the currency's minor units.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct Wallet {
     /// Steam's currency id (1 = USD, 3 = EUR, 31 = SAR, …).
@@ -105,7 +112,11 @@ impl Wallet {
                 numbers.entry(name.as_str()).or_insert(value);
             }
         }
-        let field = |name: &str| -> Option<f64> { numbers.get(name).copied() };
+        Wallet::from_fields(|name| numbers.get(name).copied())
+    }
+
+    /// A wallet from Steam's `wallet_…` numbers, wherever they were found.
+    fn from_fields(field: impl Fn(&str) -> Option<f64>) -> Option<Wallet> {
         let whole = |name: &str, low: f64, high: f64| field(name).filter(|v| (low..=high).contains(v)).map(|v| v as u32);
         let share = |name: &str| field(name).filter(|v| (0.0..0.5).contains(v));
         let d = Wallet::default();
@@ -118,6 +129,41 @@ impl Wallet {
             increment: whole("wallet_currency_increment", 1.0, 1e7).unwrap_or(d.increment),
             market_minimum: whole("wallet_market_minimum", 1.0, 1e7).unwrap_or(d.market_minimum),
         })
+    }
+
+    /// Steam's standard fees, in a currency. Where prices are whole units
+    /// only, every price is a whole number of them.
+    pub fn standard(currency: u32, whole_units: bool) -> Wallet {
+        let step = if whole_units { 100 } else { 1 };
+        Wallet { currency, increment: step, market_minimum: step, ..Wallet::default() }
+    }
+
+    /// Reads the wallet off the market page Steam opened in November 2026:
+    /// the page's data says which currency its prices are in (the wallet's,
+    /// when signed in) and whether they are whole units; the fees are
+    /// Steam's standard ones, unless the data has the old wallet numbers.
+    pub fn from_market_app(html: &str) -> Option<Wallet> {
+        let data = page_data(html)?;
+        let old = find_in(&data, &|map| {
+            map.contains_key("wallet_currency").then(|| {
+                Wallet::from_fields(|name| {
+                    let v = map.get(name)?;
+                    v.as_f64().or_else(|| v.as_str()?.trim().parse().ok())
+                })
+            })?
+        });
+        old.or_else(|| {
+            find_in(&data, &|map| {
+                let currency = map.get("eCurrency")?.as_u64().filter(|c| (1..=1000).contains(c))?;
+                let whole_units = map.get("bWholeUnitsOnly")?.as_bool()?;
+                Some(Wallet::standard(currency as u32, whole_units))
+            })
+        })
+    }
+
+    /// The wallet, from either kind of market page.
+    pub fn read(html: &str) -> Option<Wallet> {
+        Wallet::parse(html).or_else(|| Wallet::from_market_app(html))
     }
 
     /// What a buyer pays for the seller to receive this much: Steam's fee
@@ -190,6 +236,33 @@ pub fn suggest_price(
         }
     }
     Some(p.max(floor))
+}
+
+/// The data Steam's newer pages arrive with: the JSON in their
+/// `valve-ssr-data` script.
+fn page_data(html: &str) -> Option<Value> {
+    let found = re!(r#"(?s)<script[^>]*\bid="valve-ssr-data"[^>]*>(.*?)</script>"#).captures(html)?;
+    serde_json::from_str(found[1].trim()).ok()
+}
+
+/// The first object in `v`, depth first, that `pick` takes something from.
+/// Parts of the page data are JSON written into a string: those are opened
+/// and searched too.
+fn find_in<T>(v: &Value, pick: &impl Fn(&serde_json::Map<String, Value>) -> Option<T>) -> Option<T> {
+    fn walk<T>(v: &Value, pick: &impl Fn(&serde_json::Map<String, Value>) -> Option<T>, depth: usize) -> Option<T> {
+        if depth > 16 {
+            return None;
+        }
+        match v {
+            Value::Object(map) => pick(map).or_else(|| map.values().find_map(|x| walk(x, pick, depth + 1))),
+            Value::Array(items) => items.iter().find_map(|x| walk(x, pick, depth + 1)),
+            Value::String(s) if s.starts_with('{') || s.starts_with('[') => {
+                serde_json::from_str::<Value>(s).ok().and_then(|inner| walk(&inner, pick, depth + 1))
+            }
+            _ => None,
+        }
+    }
+    walk(v, pick, 0)
 }
 
 // ------------------------------------------------------------ inventory ---
@@ -300,51 +373,110 @@ pub async fn inventory(ws: &WebSession) -> Result<Vec<InvItem>> {
 
 // -------------------------------------------------------------- pricing ---
 
+/// Steam's own app id: trading cards, emoticons, backgrounds and booster
+/// packs are all its items on the market.
+const STEAM_APP: u32 = 753;
+
 pub async fn wallet(ws: &WebSession) -> Result<Wallet> {
     let html = ws.get_text("https://steamcommunity.com/market/").await?;
-    Wallet::parse(&html).ok_or_else(|| anyhow!("Steam's market page showed no wallet"))
+    Wallet::read(&html).ok_or_else(|| anyhow!("Steam's market page showed no wallet"))
 }
 
-pub async fn item_name_id(ws: &WebSession, hash_name: &str) -> Result<u64> {
-    let url = format!(
-        "https://steamcommunity.com/market/listings/753/{}",
-        urlencoding::encode(hash_name)
-    );
-    let html = ws.get_text(&url).await?;
-    re!(r"Market_LoadOrderSpread\(\s*(\d+)\s*\)")
-        .captures(&html)
-        .and_then(|c| c[1].parse().ok())
-        .ok_or_else(|| anyhow!("no order book for {hash_name}"))
+/// An item's order book: the cheapest listing and the best standing offer
+/// (what a buyer pays, in `currency`'s minor units), and how many listings
+/// there are.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Book {
+    pub currency: u32,
+    pub lowest_sell: Option<u32>,
+    pub highest_buy: Option<u32>,
+    pub sell_listings: u32,
 }
 
 fn cents(v: Option<&Value>) -> Option<u32> {
     match v? {
         Value::String(s) => s.parse().ok(),
-        Value::Number(n) => n.as_u64().map(|x| x as u32),
+        Value::Number(n) => n.as_u64().and_then(|x| u32::try_from(x).ok()),
         _ => None,
     }
     .filter(|&c| c > 0)
 }
 
-pub async fn order_book(ws: &WebSession, item_nameid: u64, currency: u32) -> Result<(Option<u32>, Option<u32>, u32)> {
+/// Reads the answer of the order book lookup Steam's listing pages use since
+/// November 2026. `None` when Steam has no market for the item.
+pub fn parse_order_book(text: &str) -> Result<Option<Book>> {
+    // What doesn't read as JSON is usually a web page instead (an error, a sign-in).
+    let v: Value = serde_json::from_str(text).map_err(|_| anyhow!("Steam answered with a page instead of the order book"))?;
+    // It comes wrapped: {"data": {"success": true, "data": {the book}}}.
+    let answer = if v.get("success").is_some() { &v } else { v.get("data").unwrap_or(&Value::Null) };
+    match answer.get("success").and_then(Value::as_bool) {
+        Some(true) => {}
+        Some(false) => return Ok(None),
+        None => bail!("Steam's order book answer isn't in the expected form"),
+    }
+    let book = answer
+        .get("data")
+        .filter(|d| d.is_object())
+        .ok_or_else(|| anyhow!("Steam's order book answer has no book in it"))?;
+    let currency = book
+        .get("eCurrency")
+        .and_then(Value::as_u64)
+        .filter(|c| (1..=1000).contains(c))
+        .ok_or_else(|| anyhow!("Steam's order book doesn't say which currency it is in"))?;
+    Ok(Some(Book {
+        currency: currency as u32,
+        lowest_sell: cents(book.get("amtMinSellOrder")),
+        highest_buy: cents(book.get("amtMaxBuyOrder")),
+        sell_listings: book.get("cSellOrders").and_then(Value::as_u64).map_or(0, |n| n.min(u32::MAX as u64) as u32),
+    }))
+}
+
+/// An item's order book, looked up by its name, in the currency Steam shows
+/// this account. One small answer, where the old way read the item's
+/// listing page for a number and then asked for the book by that number.
+/// "Too many requests" comes back as a [`SteamBusy`](super::community::SteamBusy) error.
+pub async fn order_book_by_name(ws: &WebSession, hash_name: &str) -> Result<Option<Book>> {
+    let query = serde_json::to_string(&(STEAM_APP, hash_name))?;
+    let url = format!("https://steamcommunity.com/market/orderbook?q=Load&qp={}", urlencoding::encode(&query));
+    let text = ws.get_text_or_busy(&url).await.map_err(|e| {
+        // A refusal says so without the address (long, and the same for every item).
+        if super::community::steam_busy(&e).is_some() || super::community::connection_failed(&e) {
+            e
+        } else {
+            anyhow!("Steam's order book lookup answered {}", e.root_cause())
+        }
+    })?;
+    parse_order_book(&text)
+}
+
+/// An item's order book the way Steam's market answered before November
+/// 2026, by the number its listing page gave the item (kept from back then),
+/// in a given currency.
+pub async fn order_book_by_id(ws: &WebSession, item_nameid: u64, currency: u32) -> Result<Book> {
     let url = format!(
         "https://steamcommunity.com/market/itemordershistogram?country=US&language=english&currency={currency}&item_nameid={item_nameid}&two_factor=0&norender=1"
     );
-    let text = ws.get_text(&url).await?;
+    let text = ws.get_text_or_busy(&url).await?;
     let v: Value = serde_json::from_str(&text).context("order book JSON")?;
     if v.get("success").and_then(Value::as_i64) != Some(1) {
         bail!("Steam refused the price lookup");
     }
-    let sell_count = v
+    let sell_listings = v
         .get("sell_order_count")
         .or_else(|| v.get("sell_order_summary"))
         .and_then(|c| match c {
             Value::String(s) => s.replace(',', "").parse().ok(),
-            Value::Number(n) => n.as_u64().map(|x| x as u32),
+            Value::Number(n) => n.as_u64().and_then(|x| u32::try_from(x).ok()),
             _ => None,
         })
         .unwrap_or(0);
-    Ok((cents(v.get("lowest_sell_order")), cents(v.get("highest_buy_order")), sell_count))
+    Ok(Book {
+        currency,
+        lowest_sell: cents(v.get("lowest_sell_order")),
+        highest_buy: cents(v.get("highest_buy_order")),
+        sell_listings,
+    })
 }
 
 // -------------------------------------------------------- selling/listings --
@@ -577,5 +709,58 @@ mod tests {
         assert_eq!(l[0].price_text, "$0.10 ($0.08)");
         assert_eq!(l[1].status, "pending");
         assert_eq!(l[1].name, "Card B");
+    }
+
+    #[test]
+    fn order_book_by_name_as_steam_answers_it() {
+        // Steam's answer for a trading card (riyals), November 2026.
+        let book = parse_order_book(include_str!("fixtures/orderbook_card.json")).unwrap();
+        assert_eq!(
+            book,
+            Some(Book { currency: 31, lowest_sell: Some(21), highest_buy: Some(14), sell_listings: 1141 })
+        );
+        // Steam has no market for the item.
+        assert_eq!(parse_order_book(r#"{"data":{"success":false}}"#).unwrap(), None);
+        // Nobody selling, nobody buying.
+        let empty = r#"{"data":{"success":true,"data":{"amtMaxBuyOrder":0,"eCurrency":1,"cBuyOrders":0,"cSellOrders":0,"rgCompactBuyOrders":[],"rgCompactSellOrders":[]}}}"#;
+        assert_eq!(
+            parse_order_book(empty).unwrap(),
+            Some(Book { currency: 1, lowest_sell: None, highest_buy: None, sell_listings: 0 })
+        );
+        // Unwrapped, should Steam drop the outer layer.
+        let bare = r#"{"success":true,"data":{"amtMinSellOrder":7,"eCurrency":3,"cSellOrders":2}}"#;
+        assert_eq!(parse_order_book(bare).unwrap().unwrap().lowest_sell, Some(7));
+        // What can't be read is an error, not "no price".
+        assert!(parse_order_book("<html>Sorry!</html>").is_err());
+        assert!(parse_order_book(r#"{"data":{"success":true,"data":{"amtMinSellOrder":7}}}"#).is_err());
+        assert!(parse_order_book(r#"{"data":[]}"#).is_err());
+    }
+
+    #[test]
+    fn wallet_of_the_market_steam_opened_in_november_2026() {
+        // The page's data says riyals, in hundredths, and nothing of fees.
+        let page = include_str!("fixtures/market_page_2026.html");
+        assert_eq!(Wallet::parse(page), None);
+        let w = Wallet::read(page).unwrap();
+        assert_eq!(w, Wallet::standard(31, false));
+        assert_eq!((w.currency, w.increment, w.steam_percent, w.publisher_percent), (31, 1, 0.05, 0.10));
+        assert_eq!(w.buyer_pays(19), 21);
+
+        // A currency in whole units only: every price is a whole number of them.
+        let whole = page.replace(r#"\"bWholeUnitsOnly\":false,\"eCurrency\":31"#, r#"\"bWholeUnitsOnly\":true,\"eCurrency\":16"#);
+        assert_ne!(whole, page);
+        let w = Wallet::read(&whole).unwrap();
+        assert_eq!((w.currency, w.increment, w.market_minimum), (16, 100, 100));
+
+        // Should the page carry the old wallet numbers, signed in, those count.
+        let old = page.replace(
+            r#"\"marketEligibility\":"#,
+            r#"\"walletInfo\":{\"wallet_currency\":3,\"wallet_fee_percent\":\"0.05\",\"wallet_fee_minimum\":1,\"wallet_publisher_fee_percent_default\":\"0.10\",\"wallet_fee_base\":0},\"marketEligibility\":"#,
+        );
+        assert_ne!(old, page);
+        assert_eq!(Wallet::read(&old).map(|w| w.currency), Some(3));
+
+        // No page data, no wallet.
+        assert_eq!(Wallet::read("<html><body>Steam is down</body></html>"), None);
     }
 }

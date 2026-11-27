@@ -98,7 +98,7 @@ const defaultSettings: Settings = {
     importedTimeScale: 1,
   },
   market: { strategy: "undercutLowest", undercutCents: 1, minPriceCents: 3, maxPriceCents: 0, delayMs: 1500 },
-  views: { libraryFilter: "all", librarySort: "name", marketTab: "inventory", marketFilter: "all", logsLevel: "all" },
+  views: { libraryFilter: "all", librarySort: "name", marketTab: "inventory", marketFilter: "all", marketSort: "none", logsLevel: "all" },
 };
 
 function account(partial: Partial<Account>): Account {
@@ -345,6 +345,12 @@ export function createMock() {
     { ts: now - 4 * 60_000, level: "info", scope: "idle", message: "1 game(s) idling (farming)" },
   ];
 
+  // `?inventory=big` adds 120 more cards, for a table that scrolls and a
+  // price check that takes a while.
+  const more: [string, string, string, number][] =
+    params.get("inventory") === "big"
+      ? Array.from({ length: 120 }, (_, k) => [GAMES[k % GAMES.length][1], k % 9 === 0 ? "foil" : "card", `Card ${k + 1}${k % 9 === 0 ? " (Foil)" : ""}`, 1 + (k % 4)])
+      : [];
   const inventory: InvItem[] = [
     ["Disco Elysium", "card", "Harry", 3],
     ["Disco Elysium", "card", "Kim Kitsuragi", 1],
@@ -356,6 +362,7 @@ export function createMock() {
     ["Celeste", "booster", "Celeste Booster Pack", 1],
     ["Sample Adults-Only Game", "card", "Sample Adults-Only Card", 2],
     ["", "gems", "Gems", 1],
+    ...more,
   ].map(([game, cls, name, count], i) => ({
     // As Steam names them: the game's app id, then the item (753 is Steam itself).
     marketHashName: `${cls === "gems" ? 753 : (GAMES.find((g) => g[1] === game)?.[0] ?? 100000 + i)}-${name}`,
@@ -368,6 +375,15 @@ export function createMock() {
     count: count as number,
     assetIds: Array.from({ length: count as number }, (_, k) => `${i}${k}0001`),
   }));
+
+  // Prices "checked" so far, and the price checks under way.
+  const priceList = new Map<
+    string,
+    { lowestSell: number | null; highestBuy: number | null; sellListings: number; checkedAt: number; problem: string | null }
+  >();
+  let priceRuns = 0;
+  let priceChecking = false;
+  let priceCancelled = false;
 
   const listings: Listing[] = [
     { listingId: "4422001", name: "Shadowheart", game: "Baldur's Gate 3 Trading Card", priceText: "$0.12 ($0.10)", status: "active" },
@@ -682,29 +698,74 @@ export function createMock() {
     },
     market_inventory: async () => {
       await delay(500);
-      return inventory;
+      // A new copy each time, as from the app.
+      return structuredClone(inventory);
     },
-    market_prices: async ({ hashNames }) => {
-      const out: PriceInfo[] = [];
-      for (let i = 0; i < hashNames.length; i++) {
-        emit("market://progress", { task: "prices", done: i, total: hashNames.length, message: `Pricing ${hashNames[i]}` });
-        await delay(160);
-        const seed = [...hashNames[i]].reduce((s: number, c: string) => s + c.charCodeAt(0), 0);
-        const lowest = 6 + (seed % 40);
-        const suggested = lowest - 1;
-        out.push({
-          marketHashName: hashNames[i],
-          lowestSell: lowest,
-          highestBuy: lowest - 3,
-          sellListings: 120 + (seed % 900),
+    // As the app does it: what was checked in the last hour comes at once,
+    // the rest one by one (`?pace=<ms>`, 400 by default); a newer check, or
+    // listing, takes over; Cancel stops it. `?prices=slowdown` has "Steam"
+    // ask for a pause after the fifth item.
+    market_prices: async ({ steamId, hashNames, recheck }) => {
+      const run = ++priceRuns;
+      priceCancelled = false;
+      const again = new Set<string>(recheck ?? []);
+      const names = [...new Set<string>(hashNames)];
+      const info = (name: string): PriceInfo => {
+        const seen = priceList.get(name)!;
+        const suggested = seen.lowestSell === null ? (seen.highestBuy === null ? null : seen.highestBuy + 1) : Math.max(3, seen.lowestSell - 1);
+        return {
+          marketHashName: name,
+          currency: 1,
+          lowestSell: seen.lowestSell,
+          highestBuy: seen.highestBuy,
+          sellListings: seen.sellListings,
           suggested,
-          youReceive: Math.max(1, Math.floor(suggested / 1.15)),
-        });
+          youReceive: suggested === null ? null : Math.max(1, Math.floor(suggested / 1.15)),
+          checkedAt: seen.checkedAt,
+          problem: seen.problem,
+        };
+      };
+      const known = names.filter((n) => priceList.has(n));
+      if (known.length) emit("market://prices", { steamId, wallet: US_DOLLAR_WALLET, items: known.map(info) });
+      const ask = names.filter((n) => again.has(n) || !priceList.has(n) || Date.now() - priceList.get(n)!.checkedAt > 3600_000);
+      const report = () => ({ currency: 1, wallet: US_DOLLAR_WALLET, items: names.filter((n) => priceList.has(n)).map(info) });
+      if (!ask.length) return report();
+      while (priceChecking) await delay(50);
+      const stop = () => priceCancelled || run !== priceRuns;
+      if (stop()) return report();
+      priceChecking = true;
+      try {
+        const pace = Number(params.get("pace")) || 400;
+        for (let i = 0; i < ask.length; i++) {
+          if (stop()) break;
+          emit("market://progress", { task: "prices", done: i, total: ask.length, message: `Checking prices, about ${Math.max(1, Math.ceil(((ask.length - i) * pace) / 60_000))} min left` });
+          if (params.get("prices") === "slowdown" && i === 5) {
+            emit("market://progress", { task: "prices", done: i, total: ask.length, message: "Steam asked to slow down: waiting 3 s" });
+            await delay(3000);
+          }
+          await delay(pace);
+          if (stop()) break;
+          const name = ask[i];
+          const seed = [...name].reduce((n: number, c: string) => n + c.charCodeAt(0), 0);
+          const lowest = 6 + (seed % 40);
+          // Some have nobody selling, one has no market at all.
+          priceList.set(name, {
+            lowestSell: seed % 7 === 0 ? null : lowest,
+            highestBuy: seed % 7 === 0 && seed % 2 === 0 ? null : lowest - 3,
+            sellListings: seed % 7 === 0 ? 0 : 120 + (seed % 900),
+            checkedAt: Date.now(),
+            problem: name.endsWith("Card 7") ? "Steam has no market for this item" : null,
+          });
+          emit("market://prices", { steamId, wallet: US_DOLLAR_WALLET, items: [info(name)] });
+        }
+        if (!stop() || priceCancelled) emit("market://progress", { task: "prices", done: ask.length, total: ask.length, message: "Done" });
+      } finally {
+        priceChecking = false;
       }
-      emit("market://progress", { task: "prices", done: hashNames.length, total: hashNames.length, message: "Done" });
-      return { currency: 1, wallet: US_DOLLAR_WALLET, items: out };
+      return report();
     },
     market_sell: async ({ items }) => {
+      priceRuns++;
       const out = [];
       for (const it of items) for (const id of it.assetIds) out.push({ assetId: id, ok: true, needsConfirmation: true, message: "" });
       await delay(700);
@@ -715,10 +776,13 @@ export function createMock() {
       return listings;
     },
     market_remove: async ({ listingIds }) => {
+      priceRuns++;
       await delay(500);
       return listingIds.length;
     },
-    market_cancel: () => undefined,
+    market_cancel: () => {
+      priceCancelled = true;
+    },
 
     set_autostart: ({ enabled }) => (autostart = !!enabled),
     window_close_choice: () => undefined,

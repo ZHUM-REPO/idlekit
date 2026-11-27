@@ -388,7 +388,11 @@ export function SettingsPage() {
           <Field inline label="Never list above" hint="Buyer price, in cents. 0 means no limit.">
             <NumberInput value={s.market.maxPriceCents} min={0} max={1000000} suffix="cents" onChange={(v) => mkt({ maxPriceCents: Math.max(0, v) })} />
           </Field>
-          <Field inline label="Pause between market requests" hint="Lower is faster but Steam starts refusing requests below about 1 second.">
+          <Field
+            inline
+            label="Time between market requests"
+            hint="Lower is faster. Below about 1 second Steam starts refusing requests; price checks then wait and slow down by themselves."
+          >
             <NumberInput value={s.market.delayMs} min={300} max={30000} step={100} suffix="ms" onChange={(v) => mkt({ delayMs: Math.max(300, v) })} />
           </Field>
         </Group>

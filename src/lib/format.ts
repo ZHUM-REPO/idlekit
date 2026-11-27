@@ -1,4 +1,4 @@
-import type { Wallet } from "./types";
+import type { MarketSettings, Wallet } from "./types";
 export function hoursText(minutes: number): string {
   if (minutes <= 0) return "Never played";
   const h = minutes / 60;
@@ -63,6 +63,42 @@ export function sellerReceives(buyer: number, w: Wallet): number {
   let s = Math.floor(Math.max(0, buyer - w.feeBase) / (1 + w.steamPercent + w.publisherPercent)) + 2;
   while (s > 0 && buyerPays(s, w) > buyer) s--;
   return s;
+}
+
+/** A price step: at least one increment, and a whole number of them. */
+function step(cents: number, w: Wallet): number {
+  const inc = Math.max(1, w.increment);
+  return Math.ceil(Math.max(1, cents) / inc) * inc;
+}
+
+/**
+ * Mirror of the Rust `suggest_price`: what to ask a buyer to pay, by the
+ * settings' strategy and limits, from the order book. Never below the lowest
+ * price the market takes, nor at or under a buyer's standing offer (unless
+ * the strategy is to go just over it).
+ */
+export function suggestPrice(w: Wallet, lowest: number | null, highest: number | null, s: MarketSettings): number | null {
+  const floor = buyerPays(Math.max(w.marketMinimum, 1), w);
+  const undercut = s.undercutCents;
+  const byStrategy =
+    s.strategy === "matchLowest"
+      ? lowest
+      : s.strategy === "aboveHighestBuy"
+        ? highest === null
+          ? null
+          : highest + step(undercut, w)
+        : lowest === null
+          ? null
+          : undercut === 0
+            ? lowest
+            : Math.max(0, lowest - step(undercut, w));
+  const base = byStrategy ?? lowest ?? (highest === null ? null : highest + step(1, w));
+  if (base === null) return null;
+  let p = Math.max(base, floor);
+  if (s.minPriceCents > 0) p = Math.max(p, s.minPriceCents);
+  if (s.maxPriceCents > 0) p = Math.min(p, s.maxPriceCents);
+  if (highest !== null && s.strategy !== "aboveHighestBuy" && p <= highest) p = highest + step(1, w);
+  return Math.max(p, floor);
 }
 
 // Steam wallet currency ids -> ISO 4217 codes.

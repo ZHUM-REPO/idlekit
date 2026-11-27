@@ -30,8 +30,13 @@ export interface ViewSettings {
   librarySort: "name" | "playtime" | "recent";
   marketTab: "inventory" | "listings";
   marketFilter: "all" | "card" | "foil" | "emoticon" | "background" | "booster" | "gems" | "other";
+  /** The inventory column the items are sorted by, and which way; "none" keeps the inventory's order. */
+  marketSort: "none" | `${MarketSortColumn}-${"asc" | "desc"}`;
   logsLevel: "all" | "problems" | "debug";
 }
+
+/** The market inventory's columns that sort. */
+export type MarketSortColumn = "owned" | "sell" | "lowest" | "highest" | "buyer" | "receive";
 
 export interface MarketSettings {
   strategy: "undercutLowest" | "matchLowest" | "aboveHighestBuy";
@@ -275,11 +280,24 @@ export interface Wallet {
 
 export interface PriceInfo {
   marketHashName: string;
+  /** The currency of every price here (Steam's id for it). */
+  currency: number;
   lowestSell: number | null;
   highestBuy: number | null;
   sellListings: number;
   suggested: number | null;
   youReceive: number | null;
+  /** When Steam was asked (ms since 1970). */
+  checkedAt: number;
+  /** Why there is no price, when Steam couldn't say. */
+  problem: string | null;
+}
+
+/** Prices as they come in while a price check goes on. */
+export interface PricesUpdate {
+  steamId: string;
+  wallet: Wallet;
+  items: PriceInfo[];
 }
 
 export interface Listing {

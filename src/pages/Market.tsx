@@ -1,14 +1,14 @@
-import { RefreshCw, Search, Tag, Trash } from "lucide-react";
+import { ArrowDown, ArrowUp, ArrowUpDown, RefreshCw, Search, Tag, Trash } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Button, Callout, Empty, Modal, PageHeader, Pill, Select, Tabs, TextInput, cx, inputClass } from "../components/ui";
 import { api } from "../lib/api";
 import { HiddenNotice } from "../components/HiddenNotice";
-import { money, sellerReceives } from "../lib/format";
+import { money, sellerReceives, suggestPrice, timeOfDay } from "../lib/format";
 import { useAppIds, useHiding } from "../lib/hidden";
 import { useKept, useView } from "../lib/kept";
 import { useMarket, useMarketStore } from "../lib/market";
 import { useActiveAccount, useApp, useEnsureGames } from "../lib/store";
-import type { Account, InvItem } from "../lib/types";
+import type { Account, InvItem, MarketSortColumn, ViewSettings } from "../lib/types";
 
 const CLASS_LABEL: Record<InvItem["class"], string> = {
   card: "Trading card",
@@ -82,7 +82,16 @@ function ProgressBar() {
       <span className="num text-[13px] text-muted">
         {p.done} of {p.total}
       </span>
-      <Button size="sm" variant="ghost" onClick={() => void api.marketCancel()}>
+      <Button
+        size="sm"
+        variant="ghost"
+        onClick={() => {
+          // The bar goes at once; the task stops after the request it is on.
+          useApp.setState({ marketProgress: null });
+          if (p.task === "prices") useMarketStore.getState().holdAutoPricing();
+          void api.marketCancel();
+        }}
+      >
         Cancel
       </Button>
     </div>
@@ -145,18 +154,80 @@ function SelectAllBox({
   );
 }
 
+type MarketSort = ViewSettings["marketSort"];
+
+/** What a click on a column's head does next: lowest first, then highest first, then back to the inventory's order. */
+function nextSort(sort: MarketSort, column: MarketSortColumn): MarketSort {
+  if (sort === `${column}-asc`) return `${column}-desc`;
+  if (sort === `${column}-desc`) return "none";
+  return `${column}-asc`;
+}
+
+/** A column head that sorts the items by the column. */
+function SortHead({
+  column,
+  label,
+  sort,
+  onSort,
+  className,
+}: {
+  column: MarketSortColumn;
+  label: string;
+  sort: MarketSort;
+  onSort: (next: MarketSort) => void;
+  className?: string;
+}) {
+  const way = sort === `${column}-asc` ? "asc" : sort === `${column}-desc` ? "desc" : null;
+  const Icon = way === "asc" ? ArrowUp : way === "desc" ? ArrowDown : ArrowUpDown;
+  const hint =
+    way === "asc"
+      ? "Lowest first. Click for highest first."
+      : way === "desc"
+        ? "Highest first. Click to stop sorting."
+        : `Sort by ${label.toLowerCase()}, lowest first`;
+  return (
+    <th
+      className={cx("py-2.5 text-right font-normal", className)}
+      aria-sort={way === "asc" ? "ascending" : way === "desc" ? "descending" : undefined}
+    >
+      <button
+        type="button"
+        onClick={() => onSort(nextSort(sort, column))}
+        title={hint}
+        className={cx("group inline-flex items-center gap-1 rounded-sm hover:text-ink", way && "text-ink")}
+      >
+        <Icon size={12} aria-hidden="true" className={cx(!way && "opacity-0 group-hover:opacity-70 group-focus-visible:opacity-70")} />
+        {label}
+      </button>
+    </th>
+  );
+}
+
+/** A price typed in a Buyer pays box, in minor units: `undefined` when nothing is typed, `null` when what is typed isn't a price. */
+function typedCents(text: string | undefined): number | null | undefined {
+  if (text === undefined || text.trim() === "") return undefined;
+  const v = Math.round(Number(text.replace(",", ".")) * 100);
+  return Number.isFinite(v) && v > 0 ? v : null;
+}
+
 function Inventory({ account }: { account: Account }) {
   const run = useApp((s) => s.run);
   const settings = useApp((s) => s.settings)!;
+  const market = settings.market;
+  const checking = useApp((s) => s.marketProgress?.task === "prices");
   const { items, itemsLoading: loading, prices, wallet } = useMarket(account.steamId);
   const currency = wallet.currency;
   const [qty, setQty] = useState<Record<string, number>>({});
   const [price, setPrice] = useState<Record<string, string>>({});
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [filter, setFilter] = useView("marketFilter");
+  const [sort, setSort] = useView("marketSort");
   const [query, setQuery] = useKept("market.query", "");
   const [busy, setBusy] = useState<string | null>(null);
   const [confirm, setConfirm] = useState(false);
+  // While a number is typed in the table, the rows stay where they are, and
+  // sort again once it is done.
+  const [typing, setTyping] = useState(false);
 
   const load = () => useMarketStore.getState().loadInventory(account.steamId);
   // A fresh inventory starts with nothing selected.
@@ -177,15 +248,110 @@ function Inventory({ account }: { account: Account }) {
     );
   }, [items, filter, query, hiding]);
 
+  const lastOrder = useRef<string[]>([]);
+  const sorted = useMemo(() => {
+    if (sort === "none") return shown;
+    if (typing && lastOrder.current.length > 0) {
+      const at = new Map(lastOrder.current.map((name, k) => [name, k]));
+      const end = Number.MAX_SAFE_INTEGER;
+      return [...shown].sort((a, b) => (at.get(a.marketHashName) ?? end) - (at.get(b.marketHashName) ?? end));
+    }
+    const [column, way] = sort.split("-") as [MarketSortColumn, "asc" | "desc"];
+    const buyer = (i: InvItem) => {
+      const typed = typedCents(price[i.marketHashName]);
+      const p = prices[i.marketHashName];
+      return typed !== undefined ? typed : p ? suggestPrice(wallet, p.lowestSell, p.highestBuy, market) : null;
+    };
+    const value = (i: InvItem): number | null => {
+      switch (column) {
+        case "owned":
+          return i.count;
+        case "sell":
+          return qty[i.marketHashName] ?? i.count;
+        case "lowest":
+          return prices[i.marketHashName]?.lowestSell ?? null;
+        case "highest":
+          return prices[i.marketHashName]?.highestBuy ?? null;
+        case "buyer":
+          return buyer(i);
+        case "receive": {
+          const each = buyer(i);
+          return each ? sellerReceives(each, wallet) : null;
+        }
+      }
+    };
+    // Items with nothing to sort by go last, either way; ties keep the inventory's order.
+    const keyed = shown.map((i) => [i, value(i)] as const);
+    keyed.sort(([, a], [, b]) => (a === null ? (b === null ? 0 : 1) : b === null ? -1 : way === "asc" ? a - b : b - a));
+    return keyed.map(([i]) => i);
+  }, [shown, sort, typing, prices, wallet, qty, price, market]);
+  useEffect(() => {
+    lastOrder.current = sorted.map((i) => i.marketHashName);
+  }, [sorted]);
+
+  // What to price, in order: the items shown, as the table has them, then
+  // the rest (not those of games that are hidden).
+  const priceOrder = useMemo(() => {
+    const first = sorted.map((i) => i.marketHashName);
+    const shownNow = new Set(first);
+    const rest = (items ?? [])
+      .filter((i) => i.marketable && !shownNow.has(i.marketHashName) && !(hiding.on && hiding.labelled(gameOf(i))))
+      .map((i) => i.marketHashName);
+    return [...first, ...rest];
+  }, [sorted, items, hiding]);
+  const priceOrderNow = useRef(priceOrder);
+  const shownNow = useRef<string[]>([]);
+  useEffect(() => {
+    priceOrderNow.current = priceOrder;
+    shownNow.current = sorted.map((i) => i.marketHashName);
+  }, [priceOrder, sorted]);
+
+  // Prices check by themselves once the inventory is here, and again once
+  // they are an hour old while the page stays open (not while the window is
+  // hidden in the tray).
+  useEffect(() => {
+    if (!items) return;
+    const check = () => {
+      if (document.visibilityState === "hidden") return;
+      const underWay = useApp.getState().marketProgress?.task === "prices";
+      useMarketStore.getState().priceByItself(account.steamId, items, priceOrderNow.current, underWay);
+    };
+    check();
+    const id = setInterval(check, 60_000);
+    return () => clearInterval(id);
+  }, [items, account.steamId]);
+
+  // While prices are being checked, a new search, filter or sort puts the
+  // items it shows first, when some of them have no price yet.
+  const view = `${filter}|${query.trim().toLowerCase()}|${sort}`;
+  const viewChecked = useRef(view);
+  useEffect(() => {
+    if (!checking) {
+      viewChecked.current = view;
+      return;
+    }
+    if (view === viewChecked.current) return;
+    const id = setTimeout(() => {
+      viewChecked.current = view;
+      const kept = useMarketStore.getState().byAccount[account.steamId]?.prices ?? {};
+      if (shownNow.current.some((name) => !kept[name])) {
+        void useMarketStore.getState().checkPrices(account.steamId, priceOrderNow.current);
+      }
+    }, 700);
+    return () => clearTimeout(id);
+  }, [view, checking, account.steamId]);
+
   const unmarketable = (items ?? []).filter((i) => !i.marketable).length;
   const qtyOf = (i: InvItem) => qty[i.marketHashName] ?? i.count;
+  // The price to ask, as typed; else by the strategy in the settings, so a
+  // change there shows at once.
+  const suggested = (i: InvItem) => {
+    const p = prices[i.marketHashName];
+    return p ? suggestPrice(wallet, p.lowestSell, p.highestBuy, market) : null;
+  };
   const priceOf = (i: InvItem): number | null => {
-    const typed = price[i.marketHashName];
-    if (typed !== undefined && typed.trim() !== "") {
-      const v = Math.round(Number(typed.replace(",", ".")) * 100);
-      return Number.isFinite(v) && v > 0 ? v : null;
-    }
-    return prices[i.marketHashName]?.suggested ?? null;
+    const typed = typedCents(price[i.marketHashName]);
+    return typed !== undefined ? typed : suggested(i);
   };
 
   const sellable = shown.filter((i) => selected.has(i.marketHashName) && qtyOf(i) > 0 && priceOf(i));
@@ -256,21 +422,24 @@ function Inventory({ account }: { account: Account }) {
         </Button>
         <div className="ml-auto flex gap-2">
           <Button size="sm" icon={<RefreshCw size={13} className={cx(loading && "animate-spin")} />} disabled={loading} onClick={() => void load()}>
-            Refresh
+            Reload inventory
           </Button>
           <Button
             size="sm"
             icon={<Tag size={13} />}
-            disabled={selected.size === 0}
-            busy={busy === "price"}
-            onClick={async () => {
-              setBusy("price");
-              const r = await run(null, () => api.prices(account.steamId, [...selected]));
-              if (r) useMarketStore.getState().priced(account.steamId, r.wallet, r.items);
-              setBusy(null);
+            disabled={selected.size === 0 && shown.length === 0}
+            title={selected.size > 0 ? "Ask Steam again for the prices of the items selected" : "Ask Steam again for the prices of the items shown"}
+            onClick={() => {
+              const inTable = sorted.map((i) => i.marketHashName);
+              const again =
+                selected.size > 0
+                  ? [...inTable.filter((name) => selected.has(name)), ...[...selected].filter((name) => !inTable.includes(name))]
+                  : inTable;
+              const first = new Set(again);
+              void useMarketStore.getState().checkPrices(account.steamId, [...again, ...priceOrder.filter((name) => !first.has(name))], again);
             }}
           >
-            Get prices for {selected.size || ""} selected
+            {selected.size > 0 ? `Refresh prices for ${selected.size} selected` : "Refresh prices"}
           </Button>
         </div>
       </div>
@@ -288,19 +457,39 @@ function Inventory({ account }: { account: Account }) {
                   <SelectAllBox ids={shown.map((i) => i.marketHashName)} selected={selected} onChange={setSelected} />
                 </th>
                 <th className="py-2.5 font-normal">Item</th>
-                <th className="px-3 py-2.5 text-right font-normal">Owned</th>
-                <th className="px-3 py-2.5 text-right font-normal">Sell</th>
-                <th className="px-3 py-2.5 text-right font-normal">Lowest listing</th>
-                <th className="px-3 py-2.5 text-right font-normal">Highest offer</th>
-                <th className="px-3 py-2.5 text-right font-normal">Buyer pays</th>
-                <th className="px-4 py-2.5 text-right font-normal">You receive</th>
+                <SortHead column="owned" label="Owned" sort={sort} onSort={setSort} className="px-3" />
+                <SortHead column="sell" label="Sell" sort={sort} onSort={setSort} className="px-3" />
+                <SortHead column="lowest" label="Lowest listing" sort={sort} onSort={setSort} className="px-3" />
+                <SortHead column="highest" label="Highest offer" sort={sort} onSort={setSort} className="px-3" />
+                <SortHead column="buyer" label="Buyer pays" sort={sort} onSort={setSort} className="px-3" />
+                <SortHead column="receive" label="You receive" sort={sort} onSort={setSort} className="px-4" />
               </tr>
             </thead>
-            <tbody>
-              {shown.map((i) => {
+            <tbody
+              onFocus={(e) => {
+                if (e.target instanceof HTMLInputElement && e.target.type !== "checkbox") setTyping(true);
+              }}
+              onBlur={(e) => {
+                if (!(e.relatedTarget instanceof HTMLInputElement && e.currentTarget.contains(e.relatedTarget) && e.relatedTarget.type !== "checkbox")) {
+                  setTyping(false);
+                }
+              }}
+            >
+              {sorted.map((i) => {
                 const p = prices[i.marketHashName];
                 const sel = selected.has(i.marketHashName);
                 const each = priceOf(i);
+                const ask = suggested(i);
+                // No price yet: on its way while prices are being checked.
+                const none = !p && checking ? "…" : "—";
+                const about = p
+                  ? (p.problem ??
+                    (p.lowestSell === null && p.highestBuy === null
+                      ? "Nobody is selling or buying this right now"
+                      : `Checked at ${timeOfDay(p.checkedAt)}`))
+                  : checking
+                    ? "Its price is on the way"
+                    : undefined;
                 return (
                   <tr key={i.marketHashName} className={cx("border-t border-line first:border-t-0", sel && "bg-raised/50")}>
                     <td className="px-4 py-2">
@@ -342,19 +531,23 @@ function Inventory({ account }: { account: Account }) {
                         className={cx(inputClass, "num h-7.5 w-16 text-right")}
                       />
                     </td>
-                    <td className="num px-3 py-2 text-right text-muted">{p ? money(p.lowestSell, currency) : "—"}</td>
-                    <td className="num px-3 py-2 text-right text-muted">{p ? money(p.highestBuy, currency) : "—"}</td>
+                    <td className="num px-3 py-2 text-right text-muted" title={about}>
+                      {p ? money(p.lowestSell, currency) : none}
+                    </td>
+                    <td className="num px-3 py-2 text-right text-muted" title={about}>
+                      {p ? money(p.highestBuy, currency) : none}
+                    </td>
                     <td className="px-3 py-2 text-right">
                       <input
                         aria-label={`Price for ${i.name}`}
                         inputMode="decimal"
-                        placeholder={p?.suggested ? (p.suggested / 100).toFixed(2) : "0.00"}
+                        placeholder={ask ? (ask / 100).toFixed(2) : none === "…" ? "…" : "0.00"}
                         value={price[i.marketHashName] ?? ""}
                         onChange={(e) => setPrice((x) => ({ ...x, [i.marketHashName]: e.target.value }))}
                         className={cx(inputClass, "num h-7.5 w-20 text-right")}
                       />
                     </td>
-                    <td className="num px-4 py-2 text-right">{each ? money(sellerReceives(each, wallet), currency) : "—"}</td>
+                    <td className="num px-4 py-2 text-right">{each ? money(sellerReceives(each, wallet), currency) : none}</td>
                   </tr>
                 );
               })}
@@ -497,6 +690,8 @@ function Listings({ account }: { account: Account }) {
               if (n !== undefined) {
                 useApp.getState().toast(`Removed ${n} listing(s)`, "ok");
                 void load();
+                // What was taken off the market is back in the inventory.
+                if (n > 0) void useMarketStore.getState().loadInventory(account.steamId);
               }
             }}
           >

@@ -33,6 +33,21 @@ export const VIEW_CHOICES = {
   librarySort: ["name", "playtime", "recent"],
   marketTab: ["inventory", "listings"],
   marketFilter: ["all", "card", "foil", "emoticon", "background", "booster", "gems", "other"],
+  marketSort: [
+    "none",
+    "owned-asc",
+    "owned-desc",
+    "sell-asc",
+    "sell-desc",
+    "lowest-asc",
+    "lowest-desc",
+    "highest-asc",
+    "highest-desc",
+    "buyer-asc",
+    "buyer-desc",
+    "receive-asc",
+    "receive-desc",
+  ],
   logsLevel: ["all", "problems", "debug"],
 } as const satisfies { [K in keyof ViewSettings]: readonly ViewSettings[K][] };
 

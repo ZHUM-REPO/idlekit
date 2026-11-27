@@ -71,6 +71,34 @@ pub fn session_ended(e: &anyhow::Error) -> bool {
     e.chain().any(|c| c.is::<SessionEnded>())
 }
 
+/// Steam answered "too many requests" (HTTP 429), or had trouble of its own
+/// (a 5xx): the status code.
+#[derive(Debug)]
+pub struct SteamBusy(pub u16);
+
+impl std::fmt::Display for SteamBusy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.0 == 429 {
+            f.write_str("Steam is rate-limiting requests (HTTP 429)")
+        } else {
+            write!(f, "Steam had trouble answering (HTTP {})", self.0)
+        }
+    }
+}
+
+impl std::error::Error for SteamBusy {}
+
+/// The status code when an error is Steam's "too many requests" or a 5xx.
+pub fn steam_busy(e: &anyhow::Error) -> Option<u16> {
+    e.chain().find_map(|c| c.downcast_ref::<SteamBusy>()).map(|b| b.0)
+}
+
+/// Whether an error is the connection's: no answer came at all, even after
+/// trying again.
+pub fn connection_failed(e: &anyhow::Error) -> bool {
+    e.chain().any(|c| c.is::<reqwest::Error>())
+}
+
 /// Who a community page was shown to, from the `g_steamID` every page sets.
 #[derive(Debug, PartialEq)]
 pub enum ShownTo {
@@ -144,6 +172,17 @@ impl WebSession {
     /// (timed out, reset), and with growing pauses when Steam answers 429 or
     /// a 5xx.
     pub async fn get_text(&self, url: &str) -> Result<String> {
+        self.fetch_text(url, true).await
+    }
+
+    /// GET a page as text, as [`get_text`](Self::get_text) does, except that
+    /// "too many requests" or a 5xx comes straight back, as [`SteamBusy`]:
+    /// for callers that pace many requests and wait in their own way.
+    pub async fn get_text_or_busy(&self, url: &str) -> Result<String> {
+        self.fetch_text(url, false).await
+    }
+
+    async fn fetch_text(&self, url: &str, wait_when_busy: bool) -> Result<String> {
         let mut delay = 4u64;
         let mut busy = 0;
         let mut dropped = 0;
@@ -159,6 +198,9 @@ impl WebSession {
             };
             let status = resp.status();
             if status.as_u16() == 429 || status.is_server_error() {
+                if !wait_when_busy {
+                    return Err(SteamBusy(status.as_u16()).into());
+                }
                 if busy == 3 {
                     bail!("Steam is rate-limiting requests (HTTP {status}); try again later");
                 }
