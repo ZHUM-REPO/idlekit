@@ -4,6 +4,7 @@
 //! be read. Sites that show the same list, like SteamDB, ask apps not to read
 //! them, so this goes to Valve's own page.
 
+use crate::logbus;
 use anyhow::{anyhow, bail, Result};
 use chrono::{Datelike, NaiveDate, NaiveTime, Weekday};
 use scraper::{ElementRef, Html, Node};
@@ -16,6 +17,16 @@ pub const SOURCE: &str = "https://partner.steamgames.com/doc/marketing/upcoming_
 
 /// Where the last list read is kept, in the app's data folder.
 pub const FILE: &str = "steam_events.json";
+
+/// Where the page is read from. Development builds can be pointed at a local
+/// copy instead, for trying this out without Valve's server.
+fn source() -> String {
+    #[cfg(debug_assertions)]
+    if let Ok(url) = std::env::var("IDLEKIT_EVENTS_URL") {
+        return url;
+    }
+    SOURCE.to_string()
+}
 
 /// Valve's page as it was when this version was made: what is shown before
 /// the page has ever been read.
@@ -56,7 +67,7 @@ pub struct EventList {
 /// Reads Valve's page. A page without a single date IdleKit can read counts
 /// as a failure, so a changed page never replaces a good list with nothing.
 pub async fn fetch(http: &reqwest::Client) -> Result<Vec<SteamEvent>> {
-    let resp = http.get(SOURCE).header("Accept-Language", "en-US,en;q=0.8").send().await.map_err(|e| {
+    let resp = http.get(source()).header("Accept-Language", "en-US,en;q=0.8").send().await.map_err(|e| {
         anyhow!(if e.is_timeout() { "Valve's page didn't answer in time" } else { "Valve's page couldn't be reached" })
     })?;
     if !resp.status().is_success() {
@@ -68,6 +79,48 @@ pub async fn fetch(http: &reqwest::Client) -> Result<Vec<SteamEvent>> {
         bail!("Valve's page had no dates IdleKit could read");
     }
     Ok(events)
+}
+
+/// The list for the window. Without `refresh` it is what is there already,
+/// the list read last or the one this version came with, and the network
+/// isn't touched: the window asks for a fresh copy itself when that one is
+/// from before today. With `refresh`, Valve's page is read with `read` and
+/// kept; a page that can't be read leaves what was there, with the reason.
+pub async fn list<F, Fut>(file: &Path, refresh: bool, read: F) -> EventList
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = Result<Vec<SteamEvent>>>,
+{
+    let kept = load(file);
+    if !refresh {
+        return kept.unwrap_or_else(built_in);
+    }
+    // The same failure again (an hour later, offline) is no news: a warning
+    // the first time, then only a debug line.
+    static LAST_FAILURE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+    match read().await {
+        Ok(events) => {
+            *LAST_FAILURE.lock().unwrap_or_else(|p| p.into_inner()) = None;
+            let list =
+                EventList { events, fetched_at: Some(chrono::Utc::now().timestamp_millis()), from: "valve".into(), error: None };
+            logbus::info("events", format!("Read {} Steam events from Valve's schedule", list.events.len()));
+            if let Err(e) = save(file, &list) {
+                logbus::warn("events", format!("Couldn't keep the events list on disk: {e:#}"));
+            }
+            list
+        }
+        Err(e) => {
+            let why = format!("{e:#}");
+            let again = LAST_FAILURE.lock().unwrap_or_else(|p| p.into_inner()).replace(why.clone()).as_deref() == Some(why.as_str());
+            let line = format!("Couldn't read Valve's events schedule: {why}");
+            if again {
+                logbus::debug("events", line);
+            } else {
+                logbus::warn("events", line);
+            }
+            EventList { error: Some(why), ..kept.unwrap_or_else(built_in) }
+        }
+    }
 }
 
 /// The list that comes with this version, for when the page was never read.
@@ -146,27 +199,30 @@ struct Reader {
 
 impl Reader {
     fn heading(&mut self, text: &str, main: bool) {
+        // A section's text runs on under its subheadings: "Black Friday 2026",
+        // its sentence with the dates, then perhaps "How to take part".
         if main {
             self.end_section();
             self.section = text.to_string();
             self.section_dated = false;
         }
-        self.prose.clear();
         if let Some((name, dates)) = text.split_once('|') {
             let name = squash_str(name);
             if let Some(y) = year_in(&name) {
                 self.year = Some(y);
             }
             let kind = kind_of(&self.section, &name);
-            self.add(&name, kind, dates);
-            self.section_dated = true;
+            if self.add(&name, kind, dates) {
+                self.section_dated = true;
+            }
         } else if let Some(y) = year_in(text) {
             self.year = Some(y);
         }
     }
 
     /// One fest per row: the dates from the column headed "...Dates", the
-    /// name from the one headed "Theme" (or "Event", "Name").
+    /// name from the one headed "Theme" (or "Event", "Name"; else the first
+    /// other column).
     fn table(&mut self, table: ElementRef) {
         let rows: Vec<ElementRef> = table.select(sel!("tr")).collect();
         let Some(head) = rows.first() else { return };
@@ -175,6 +231,7 @@ impl Reader {
         let Some(name_at) = titles
             .iter()
             .position(|t| !t.contains("date") && (t.contains("theme") || t.contains("event") || t.contains("name")))
+            .or_else(|| (0..titles.len()).find(|&i| i != dates_at))
         else {
             return;
         };
@@ -193,25 +250,28 @@ impl Reader {
                 continue;
             }
             let kind = kind_of(&self.section, &name);
-            self.add(&name, kind, &dates);
-            self.section_dated = true;
+            if self.add(&name, kind, &dates) {
+                self.section_dated = true;
+            }
         }
     }
 
-    /// A section that named a year but no dates of its own may give them in a
-    /// sentence: "From November 26th 10AM PT through November 30th 10AM PT".
+    /// A section with no dates of its own may give them in a sentence: "From
+    /// November 26th 10AM PT through November 30th 10AM PT", the year from
+    /// its heading ("Black Friday 2026"), or in the sentence itself.
     fn end_section(&mut self) {
         let prose = std::mem::take(&mut self.prose);
         if self.section_dated || self.section.is_empty() {
             return;
         }
-        let Some(year) = year_in(&self.section) else { return };
+        let year = year_in(&self.section);
         let prose = squash_str(&prose);
-        let Some(found) = re!(r"(?i)\bfrom\s+(.{3,40}?)\s+(?:through|until|to)\s+(.{3,40}?)(?:[,.;]|$)").captures(&prose) else {
-            return;
-        };
-        let dates = format!("{} - {}", &found[1], &found[2]);
-        if let Some(range) = read_range(&dates, Some(year)) {
+        // "Games from every genre to celebrate" comes before the dates as
+        // often as not: the first "from … to" that reads as dates counts.
+        let range = re!(r"(?i)\bfrom\s+(.{3,40}?)\s+(?:through|until|to)\s+(.{3,40}?)(?:[,.;]|$)")
+            .captures_iter(&prose)
+            .find_map(|found| read_range(&format!("{} - {}", &found[1], &found[2]), year));
+        if let Some(range) = range {
             let name = self.section.clone();
             let kind = kind_of(&self.section, &name);
             self.events.push(event(&name, kind, Some(range)));
@@ -219,14 +279,21 @@ impl Reader {
         }
     }
 
-    fn add(&mut self, name: &str, kind: &'static str, dates: &str) {
+    /// Adds the event, if `dates` are dates or say they're still to be decided
+    /// ("TBD"). Anything else after a bar ("Registration | Requirements") is
+    /// not an event.
+    fn add(&mut self, name: &str, kind: &'static str, dates: &str) -> bool {
         let range = read_range(dates, self.year);
+        if range.is_none() && !re!(r"(?i)\b(tbd|tba|to be (announced|decided|determined|confirmed)|coming soon)\b").is_match(dates) {
+            return false;
+        }
         // The Next Fests are all called "Next Fest": their month tells them apart.
         let name = match (&range, kind) {
             (Some(r), "nextfest") if year_in(name).is_none() => format!("{}: {}", name, r.first.format("%B %Y")),
             _ => name.to_string(),
         };
         self.events.push(event(&name, kind, range));
+        true
     }
 }
 
@@ -484,6 +551,104 @@ mod tests {
         assert_eq!(pacific_ms(day(2027, 3, 14), ten), utc("2027-03-14T17:00:00Z"));
         assert_eq!(pacific_ms(day(2027, 11, 6), ten), utc("2027-11-06T17:00:00Z"));
         assert_eq!(pacific_ms(day(2027, 11, 7), ten), utc("2027-11-07T18:00:00Z"));
+    }
+
+    /// Valve edits this page through the year; these are edits it could make
+    /// that the reading must survive.
+    #[test]
+    fn dates_in_a_sentence_survive_a_subheading_after_them() {
+        let page = r#"<div class="documentation_bbcode"><h2 class="bb_section">Black Friday 2027</h2>
+            The hub returns. From November 25th 10AM PT through November 29th 10AM PT, discounts are featured.
+            <h2 class="bb_subsection">How to take part</h2>Set up a discount as usual.</div>"#;
+        let events = parse(page);
+        assert_eq!(events.len(), 1, "{events:?}");
+        assert_eq!((events[0].first_day.as_deref(), events[0].last_day.as_deref()), (Some("2027-11-25"), Some("2027-11-29")));
+    }
+
+    #[test]
+    fn a_from_and_to_that_arent_dates_dont_hide_the_dates_after_them() {
+        let page = r#"<div class="documentation_bbcode"><h2 class="bb_section">Lunar New Year 2027</h2>
+            Games from every genre to celebrate the year. From February 4th through February 11th, the sale runs.</div>"#;
+        let events = parse(page);
+        assert_eq!(events.len(), 1, "{events:?}");
+        assert_eq!((events[0].first_day.as_deref(), events[0].last_day.as_deref()), (Some("2027-02-04"), Some("2027-02-11")));
+    }
+
+    #[test]
+    fn a_sentence_with_whole_dates_needs_no_year_in_its_heading() {
+        let page = r#"<div class="documentation_bbcode"><h2 class="bb_section">Lunar New Year Sale</h2>
+            From February 4th, 2027 through February 11th, 2027, discounts are featured.</div>"#;
+        let events = parse(page);
+        assert_eq!(events.len(), 1, "{events:?}");
+        assert_eq!((events[0].first_day.as_deref(), events[0].last_day.as_deref()), (Some("2027-02-04"), Some("2027-02-11")));
+    }
+
+    #[test]
+    fn a_fest_table_with_its_name_column_renamed_still_reads() {
+        let page = r#"<div class="documentation_bbcode"><h2 class="bb_section">Themed Sale Events (Fests)</h2>
+            <h2 class="bb_subsection">2027 Fests</h2><table><tr><th>Event Dates</th><th>Fest</th><th>Registration</th></tr>
+            <tr><td>Jan 14<br>Jan 18</td><td>Desktop Companion Fest</td><td>Registration details</td></tr></table></div>"#;
+        let names: Vec<String> = parse(page).into_iter().map(|e| e.name).collect();
+        assert_eq!(names, ["Desktop Companion Fest"]);
+    }
+
+    #[test]
+    fn a_heading_with_a_bar_but_no_dates_is_not_an_event() {
+        let page = r#"<div class="documentation_bbcode"><h2 class="bb_section">Next Fest</h2>
+            <h2 class="bb_subsection">Registration | Requirements</h2>Have a demo ready.
+            <h2 class="bb_subsection">Next Fest | June 14 - 21, 2027</h2>
+            <h2 class="bb_subsection">Next Fest | TBD</h2></div>"#;
+        let names: Vec<String> = parse(page).into_iter().map(|e| e.name).collect();
+        assert_eq!(names, ["Next Fest: June 2027", "Next Fest"]);
+    }
+
+    #[tokio::test]
+    async fn the_page_is_only_read_when_asked_for() {
+        let dir = std::env::temp_dir().join(format!("idlekit-events-list-{}", std::process::id()));
+        let file = dir.join(FILE);
+        let _ = std::fs::remove_dir_all(&dir);
+        let read = std::sync::atomic::AtomicUsize::new(0);
+        let page = || async {
+            read.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(parse(BUILT_IN))
+        };
+        let down = || async {
+            read.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Err(anyhow!("Valve's page couldn't be reached"))
+        };
+        let reads = || read.load(std::sync::atomic::Ordering::SeqCst);
+
+        // Nothing kept: the list this version came with, at once, without the network.
+        let first = list(&file, false, page).await;
+        assert_eq!((first.from.as_str(), first.fetched_at, reads()), ("built-in", None, 0));
+
+        // The page unreachable: what was there, and why; nothing written.
+        let failed = list(&file, true, down).await;
+        assert_eq!((failed.from.as_str(), failed.error.as_deref(), reads()), ("built-in", Some("Valve's page couldn't be reached"), 1));
+        assert!(!file.exists());
+
+        // Read: kept, and given without the network from then on.
+        let fresh = list(&file, true, page).await;
+        assert_eq!((fresh.from.as_str(), fresh.error.as_deref(), reads()), ("valve", None, 2));
+        assert!(fresh.fetched_at.is_some());
+        assert_eq!(list(&file, false, page).await, fresh);
+        assert_eq!(reads(), 2);
+
+        // Unreachable again: the list read before stays, with the reason.
+        let kept = list(&file, true, down).await;
+        assert_eq!((kept.fetched_at, kept.error.as_deref()), (fresh.fetched_at, Some("Valve's page couldn't be reached")));
+        assert_eq!(kept.events, fresh.events);
+
+        // And again, for the same reason: no new warning, only a debug line.
+        list(&file, true, down).await;
+        let said = |level: &str| {
+            logbus::recent()
+                .iter()
+                .filter(|l| l.scope == "events" && l.level == level && l.message.ends_with("Valve's page couldn't be reached"))
+                .count()
+        };
+        assert_eq!((said("warn"), said("debug")), (2, 1));
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

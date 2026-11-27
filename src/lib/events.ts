@@ -51,33 +51,41 @@ export function isStale(list: EventList | null, now = Date.now()): boolean {
   return !list?.fetchedAt || list.fetchedAt < dayStart(now);
 }
 
+/** Whether the list is being kept fresh already: it is started once, for as long as the window lives. */
+let keeping = false;
+
 /**
- * Keeps the list fresh while IdleKit runs: the list read last at once, then
- * Valve's page when it wasn't read today, and again each midnight. A page that
- * couldn't be read is tried again an hour later.
+ * Keeps the list fresh while IdleKit runs: what is there already at once (the
+ * list read last, or the one this version came with), then Valve's page when
+ * that wasn't read today, and again each midnight. A page that couldn't be
+ * read is tried again an hour later. However often the sidebar is drawn (React
+ * draws it twice while developing), this runs once.
  */
+export function keepEventsFresh() {
+  if (keeping) return;
+  keeping = true;
+  let lastTry = 0;
+  let today = dayStart(Date.now());
+  const freshen = async (now: boolean) => {
+    if (!isStale(useEvents.getState().list)) return;
+    if (!now && Date.now() - lastTry < HOUR) return;
+    lastTry = Date.now();
+    await useEvents.getState().load(true);
+  };
+  void useEvents
+    .getState()
+    .load(false)
+    .then(() => freshen(true));
+  setInterval(() => {
+    const day = dayStart(Date.now());
+    const newDay = day !== today;
+    today = day;
+    void freshen(newDay);
+  }, 30_000);
+}
+
 export function useEventsKeptFresh() {
-  useEffect(() => {
-    let lastTry = 0;
-    let today = dayStart(Date.now());
-    const freshen = async (now: boolean) => {
-      if (!isStale(useEvents.getState().list)) return;
-      if (!now && Date.now() - lastTry < HOUR) return;
-      lastTry = Date.now();
-      await useEvents.getState().load(true);
-    };
-    void useEvents
-      .getState()
-      .load(false)
-      .then(() => freshen(true));
-    const id = setInterval(() => {
-      const day = dayStart(Date.now());
-      const newDay = day !== today;
-      today = day;
-      void freshen(newDay);
-    }, 30_000);
-    return () => clearInterval(id);
-  }, []);
+  useEffect(keepEventsFresh, []);
 }
 
 /** Events with dates that haven't ended yet, in the order they start. */

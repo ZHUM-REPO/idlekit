@@ -253,39 +253,10 @@ impl App {
 
     // ---------------------------------------------------------- steam events --
 
-    /// Steam's upcoming sales and fests. Without `refresh` the list read last
-    /// is enough; with it, Valve's page is read again. A page that can't be
-    /// read leaves the list read before (or the one this version came with),
-    /// with the reason.
+    /// Steam's upcoming sales and fests: what is there already, or (with
+    /// `refresh`) Valve's page read again. See `events::list`.
     pub async fn steam_events(&self, refresh: bool) -> EventList {
-        let file = self.data_dir.join(events::FILE);
-        let kept = events::load(&file);
-        if !refresh {
-            if let Some(list) = kept {
-                return list;
-            }
-        }
-        match events::fetch(&self.http).await {
-            Ok(found) => {
-                let list = EventList {
-                    events: found,
-                    fetched_at: Some(chrono::Utc::now().timestamp_millis()),
-                    from: "valve".into(),
-                    error: None,
-                };
-                logbus::info("events", format!("Read {} Steam events from Valve's schedule", list.events.len()));
-                if let Err(e) = events::save(&file, &list) {
-                    logbus::warn("events", format!("Couldn't keep the events list on disk: {e:#}"));
-                }
-                list
-            }
-            Err(e) => {
-                logbus::warn("events", format!("Couldn't read Valve's events schedule: {e:#}"));
-                let mut list = kept.unwrap_or_else(events::built_in);
-                list.error = Some(format!("{e:#}"));
-                list
-            }
-        }
+        events::list(&self.data_dir.join(events::FILE), refresh, || events::fetch(&self.http)).await
     }
 
     // ------------------------------------------------------- web session --

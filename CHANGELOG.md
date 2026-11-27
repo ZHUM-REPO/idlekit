@@ -2,6 +2,11 @@
 
 The section for the version being released becomes the text of its release page.
 
+## 2.1
+
+- **Upcoming Events asks Valve's page once at startup.** When the page couldn't be reached, IdleKit asked for it twice in a row as it started, and wrote two warnings. Now the list it already has shows at once and the page is asked for once. When the same failure comes back an hour later, it's noted quietly instead of as a new warning.
+- **Reading Valve's schedule holds up to more changes to the page.** An event whose dates are in a sentence is still found when a subheading follows it, or when a "from … to" that isn't dates comes first, or when its heading has no year but the sentence does. A heading with a bar in it that isn't an event no longer shows up as an event without dates. The fests are still read if the table's "Theme" column is renamed.
+
 ## 2.0
 
 - **Select all from the head of the inventory table.** On the Market's Inventory tab, the box at the top of the checkbox column ticks every item the table shows, under the filter and search in use, and unticks them again once they're all ticked. While only some are ticked it shows a dash. Items picked under another filter or search stay picked.
